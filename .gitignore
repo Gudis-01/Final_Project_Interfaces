@@ -1,0 +1,45 @@
+# Unity: carpetas que Unity regenera solo (no se suben)
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# Archivos de IDE (Visual Studio / VS Code / Rider)
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.unityproj
+*.sln
+*.slnx
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Builds de Android
+*.apk
+*.aab
+*.unitypackage
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Gradle / crash reports
+.gradle/
+sysinfo.txt
+crashlytics-build.properties
