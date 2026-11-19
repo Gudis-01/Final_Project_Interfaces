@@ -16,7 +16,9 @@ namespace Subtitulos.UI
     ///  • Se desvanecen solas tras unos segundos de silencio (ajustable o desactivable).
     ///  • Opcional: ignorar voces lejanas (bajas), para no subtitular conversaciones ajenas.
     ///
-    /// Cada burbuja lleva una barrita y una etiqueta (P1, P2...) con el color de quien habla.
+    /// Cada burbuja lleva una barrita y una etiqueta (P1, P2...) con el color de quien habla,
+    /// el idioma detectado (en modo automático) y las palabras dudosas se ven más tenues
+    /// (el sistema muestra cuándo no está seguro, en vez de aparentar certeza).
     /// </summary>
     public class SubtitleFeed : MonoBehaviour
     {
@@ -39,6 +41,8 @@ namespace Subtitulos.UI
         [SerializeField] private float mergeSeconds = 5f;
         [Tooltip("Máximo de caracteres por burbuja; lo más viejo se recorta con '…'.")]
         [SerializeField] private int maxCharsPerBubble = 150;
+        [Tooltip("Palabras con confianza menor a esto se muestran más tenues (si está activado).")]
+        [SerializeField, Range(0f, 1f)] private float uncertainBelow = 0.6f;
         [Tooltip("Volumen mínimo (dBFS) para aceptar una frase cuando 'Ignorar voces lejanas' está activo.")]
         [SerializeField, Range(-60f, -10f)] private float nearVoiceDb = -38f;
         [SerializeField] private float fadeSpeed = 6f;
@@ -50,8 +54,11 @@ namespace Subtitulos.UI
             public Image Background;
             public Image Accent;
             public TextMeshProUGUI Label;
+            public LayoutElement TextLayout;
             public int SpeakerId = SpeakerTracker.Unknown;
-            public string Text = "";
+            public string Language = "";
+            public string Text = "";                                   // texto provisional (burbuja en vivo)
+            public readonly List<RecognizedWord> Words = new List<RecognizedWord>(); // frases terminadas
             public float LastUpdate;
             public bool Removing;
         }
@@ -99,7 +106,7 @@ namespace Subtitulos.UI
         {
             if (microphone != null) _peakDb = Mathf.Max(_peakDb, microphone.LevelDb);
 
-            float hideAfter = Values.hideAfterSeconds;
+            float hideAfter = settings != null ? settings.HideAfterSeconds : 8f;
             for (int i = _finished.Count - 1; i >= 0; i--)
             {
                 Bubble b = _finished[i];
@@ -126,6 +133,7 @@ namespace Subtitulos.UI
 
         private void OnPartial(string text)
         {
+            if (_live == null) return;
             bool tooQuiet = Values.ignoreDistantVoices && _peakDb < nearVoiceDb;
             _live.Text = tooQuiet ? "" : text;
             Render(_live, isLive: true);
@@ -133,6 +141,7 @@ namespace Subtitulos.UI
 
         private void OnFinal(TranscriptSegment segment)
         {
+            if (_live == null || segment.Words.Count == 0) return;
             bool tooQuiet = Values.ignoreDistantVoices && _peakDb < nearVoiceDb;
             _peakDb = -80f;
             _live.Text = "";
@@ -142,23 +151,29 @@ namespace Subtitulos.UI
             Bubble last = _finished.Count > 0 ? _finished[_finished.Count - 1] : null;
             bool sameTurn = last != null
                 && last.SpeakerId == segment.SpeakerId
+                && last.Language == segment.Language
                 && Time.time - last.LastUpdate < mergeSeconds;
 
-            if (sameTurn)
+            Bubble target = sameTurn ? last : CreateBubble();
+            if (!sameTurn)
             {
-                last.Text = Truncate(last.Text + " " + segment.Text);
-                last.LastUpdate = Time.time;
-                Render(last, isLive: false);
+                target.SpeakerId = segment.SpeakerId;
+                target.Language = segment.Language;
+                _finished.Add(target);
             }
-            else
+            else if (target.Words.Count > 0)
             {
-                Bubble bubble = CreateBubble();
-                bubble.Text = Truncate(segment.Text);
-                bubble.SpeakerId = segment.SpeakerId;
-                bubble.LastUpdate = Time.time;
-                _finished.Add(bubble);
-                Render(bubble, isLive: false);
+                // Al continuar la frase, solo la primera palabra de toda la burbuja lleva mayúscula.
+                RecognizedWord first = segment.Words[0];
+                var rest = new List<RecognizedWord>(segment.Words);
+                rest[0] = new RecognizedWord(Decapitalize(first.Text, segment.Language), first.Confidence);
+                target.Words.AddRange(rest);
+                Truncate(target.Words);
             }
+            if (!sameTurn) { target.Words.AddRange(segment.Words); Truncate(target.Words); }
+
+            target.LastUpdate = Time.time;
+            Render(target, isLive: false);
 
             TrimToMaxLines();
             _live.Root.transform.SetAsLastSibling(); // lo que se está diciendo siempre hasta abajo
@@ -168,7 +183,7 @@ namespace Subtitulos.UI
         {
             if (statusLabel == null) return;
             // Mientras todo funciona no se muestra nada: la barra de volumen ya indica que escucha.
-            bool ok = transcriber != null && transcriber.IsReady && !status.StartsWith("Error");
+            bool ok = transcriber != null && transcriber.IsReady && !transcriber.HasError;
             statusLabel.text = ok ? "" : status;
             statusLabel.gameObject.SetActive(!ok && !string.IsNullOrEmpty(status));
         }
@@ -185,6 +200,7 @@ namespace Subtitulos.UI
         {
             for (int i = _finished.Count - 1; i >= 0; i--) Remove(_finished[i]);
             if (_live != null) { _live.Text = ""; Render(_live, isLive: true); }
+            // (los hablantes se olvidan en el transcriptor)
             transcriber?.ResetConversation();
         }
 
@@ -204,15 +220,42 @@ namespace Subtitulos.UI
             _removing.Add(bubble);
         }
 
-        /// <summary>Si el texto es muy largo, conserva lo más reciente y corta en un espacio.</summary>
-        private string Truncate(string text)
+        /// <summary>Si la burbuja tiene demasiado texto, quita las palabras más viejas.</summary>
+        private void Truncate(List<RecognizedWord> words)
         {
-            text = text.Trim();
-            if (text.Length <= maxCharsPerBubble) return text;
-            string tail = text.Substring(text.Length - maxCharsPerBubble);
-            int space = tail.IndexOf(' ');
-            if (space > 0 && space < 20) tail = tail.Substring(space + 1);
-            return "… " + tail;
+            int chars = 0;
+            foreach (RecognizedWord w in words) chars += w.Text.Length + 1;
+            while (chars > maxCharsPerBubble && words.Count > 1)
+            {
+                chars -= words[0].Text.Length + 1;
+                words.RemoveAt(0);
+            }
+        }
+
+        private static string Decapitalize(string word, string language)
+        {
+            if (string.IsNullOrEmpty(word) || word == "I" || word.StartsWith("I'")) return word;
+            return char.ToLower(word[0]) + word.Substring(1);
+        }
+
+        /// <summary>Arma el texto con las palabras dudosas más tenues (opacidad baja).</summary>
+        private string BuildText(Bubble bubble, bool isLive, AccessibilityValues v)
+        {
+            if (isLive) return "<noparse>" + bubble.Text + "</noparse>";
+
+            var sb = new System.Text.StringBuilder();
+            bool trimmed = false;
+            for (int i = 0; i < bubble.Words.Count; i++)
+            {
+                RecognizedWord w = bubble.Words[i];
+                if (i > 0) sb.Append(' ');
+                bool dim = v.dimUncertainWords && !v.highContrast && w.Confidence < uncertainBelow;
+                if (dim) sb.Append("<alpha=#80>");
+                sb.Append("<noparse>").Append(w.Text).Append("</noparse>");
+                if (dim) sb.Append("<alpha=#FF>");
+                trimmed |= i == 0 && w.Text.Length > 0 && char.IsLower(w.Text[0]);
+            }
+            return (trimmed ? "… " : "") + sb;
         }
 
         // ---------- Construcción y dibujo ----------
@@ -248,8 +291,10 @@ namespace Subtitulos.UI
 
             var textGo = new GameObject("Text", typeof(RectTransform), typeof(TextMeshProUGUI), typeof(LayoutElement));
             textGo.transform.SetParent(root.transform, false);
-            textGo.GetComponent<LayoutElement>().flexibleWidth = 1;
+            var textLayout = textGo.GetComponent<LayoutElement>();
+            textLayout.flexibleWidth = 1;
             var label = textGo.GetComponent<TextMeshProUGUI>();
+            label.alignment = TextAlignmentOptions.MidlineLeft;
             label.textWrappingMode = TextWrappingModes.Normal;
             label.richText = true;
             label.raycastTarget = false;
@@ -259,7 +304,7 @@ namespace Subtitulos.UI
             group.alpha = 0f; // aparece con fade
             group.blocksRaycasts = false;
 
-            return new Bubble { Root = root, Group = group, Background = background, Accent = accent, Label = label };
+            return new Bubble { Root = root, Group = group, Background = background, Accent = accent, Label = label, TextLayout = textLayout };
         }
 
         private void ApplySprite(Image image, float roundness)
@@ -268,6 +313,30 @@ namespace Subtitulos.UI
             image.sprite = bubbleSprite;
             image.type = Image.Type.Sliced;
             image.pixelsPerUnitMultiplier = roundness; // más alto = esquinas más chicas
+        }
+
+        /// <summary>
+        /// Calcula la altura del texto con el ancho real disponible. (TextMeshPro dentro de
+        /// layouts a veces reporta la altura con un ancho viejo y la burbuja queda demasiado alta.)
+        /// </summary>
+        private void FitHeight(Bubble bubble)
+        {
+            const float horizontalChrome = 20 + 24 + 16 + 6; // padding + espacio + barrita de color
+            float width = container.rect.width - horizontalChrome;
+            if (width < 20f) return;
+            Vector2 size = bubble.Label.GetPreferredValues(bubble.Label.text, width, 0f);
+            bubble.TextLayout.preferredHeight = Mathf.Ceil(size.y);
+        }
+
+        private float _lastWidth;
+
+        private void LateUpdate()
+        {
+            // Si cambia el ancho del panel (primer frame, cambio de tamaño), recalcular alturas.
+            if (Mathf.Approximately(container.rect.width, _lastWidth)) return;
+            _lastWidth = container.rect.width;
+            foreach (Bubble b in _finished) FitHeight(b);
+            if (_live != null) FitHeight(_live);
         }
 
         private void Render(Bubble bubble, bool isLive)
@@ -283,17 +352,24 @@ namespace Subtitulos.UI
             bubble.Label.color = isLive && !v.highContrast ? SubtitlePalette.TextSecondary : SubtitlePalette.Text;
             if (settings != null && settings.CurrentFont != null) bubble.Label.font = settings.CurrentFont;
 
+            // Etiqueta pequeña: persona (en su color) y, en modo automático, el idioma detectado.
             string tag = "";
             if (colors)
             {
                 string hex = SubtitlePalette.ToHex(SubtitlePalette.Speaker(bubble.SpeakerId));
-                tag = $"<size=70%><color=#{hex}><b>{SubtitlePalette.SpeakerLabel(bubble.SpeakerId)}</b></color></size>   ";
+                tag = $"<color=#{hex}><b>{SubtitlePalette.SpeakerLabel(bubble.SpeakerId)}</b></color>";
             }
+            bool showLanguage = !isLive && v.language == RecognitionLanguage.Auto && !string.IsNullOrEmpty(bubble.Language);
+            if (showLanguage)
+                tag += (tag.Length > 0 ? "  " : "") + $"<color=#FFFFFF80>{bubble.Language.ToUpperInvariant()}</color>";
+            if (tag.Length > 0) tag = $"<size=62%><cspace=0.05em>{tag}</cspace></size>   ";
 
             // <noparse> evita que el texto reconocido se interprete como etiquetas de formato.
-            bubble.Label.text = tag + "<noparse>" + bubble.Text + "</noparse>";
+            bubble.Label.text = tag + BuildText(bubble, isLive, v);
 
-            bool visible = !string.IsNullOrEmpty(bubble.Text);
+            FitHeight(bubble);
+
+            bool visible = isLive ? !string.IsNullOrEmpty(bubble.Text) : bubble.Words.Count > 0;
             if (isLive && !visible) bubble.Group.alpha = 0f;
             bubble.Root.SetActive(visible);
         }

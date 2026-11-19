@@ -1,8 +1,8 @@
 using System.IO;
-using System.Linq;
 using Subtitulos.Audio;
 using Subtitulos.Speech;
 using Subtitulos.UI;
+using Subtitulos.UI.Controls;
 using TMPro;
 using UnityEditor;
 using UnityEngine;
@@ -14,35 +14,38 @@ namespace Subtitulos.EditorTools
     /// Menú "Subtítulos > Crear sistema en la escena": arma (o rehace) toda la interfaz
     /// y conecta las referencias entre componentes.
     ///
-    /// Diseño (basado en el boceto del equipo):
-    ///   ┌────┬──────────────────────────────────────────┐
-    ///   │ ▮  │        [ aviso de sonido fuerte ]        │
-    ///   │ ▮  │                                          │
-    ///   │ ▮  │ ▌P1  Hola, ¿cómo estás?                  │
-    ///   │Bajo│ ▌P2  Bien, ¿y tú?                        │
-    ///   │ Aa │ ▌    (lo que se está diciendo…)          │
-    ///   └────┴──────────────────────────────────────────┘
-    ///   volumen     subtítulos por persona (máx. 1-3)        + panel de ajustes a la derecha
+    ///   ┌────┬─────────────────────────────────────────────┐   ┌──────────────────────┐
+    ///   │ 🎙 │        [ 🔔 aviso de sonido fuerte ]         │   │ Ajustes            ✕ │
+    ///   │AUTO│                                             │   │ IDIOMA               │
+    ///   │ ▮  │ ▌P1  Hola, ¿cómo estás?                     │   │ [Español|English|Auto]│
+    ///   │ ▮  │ ▌P2 EN  I'm good, thanks                    │   │ TEXTO …              │
+    ///   │ ⚙  │ ▌    (lo que se está diciendo…)             │   │ SUBTÍTULOS …         │
+    ///   └────┴─────────────────────────────────────────────┘   └──────────────────────┘
+    ///
+    /// Sistema visual: vidrio oscuro + texto blanco (legible sobre el mundo real),
+    /// tipografía Inter, íconos Material Icons Round, un solo color de acento.
     /// </summary>
     public static class SubtitleSceneBuilder
     {
         private const float CanvasScale = 0.001f; // 1 px = 1 mm
-        private const string ArtFolder = "Assets/Subtitulos/Art";
-        private const string PillPath = ArtFolder + "/Pill.png";
+        private const string Root = "Assets/Subtitulos";
+        private const string PillPath = Root + "/Art/Pill.png";
 
         private static Sprite _pill;
-        private static TMP_FontAsset _font;
+        private static TMP_FontAsset _font;       // UI
+        private static TMP_FontAsset _iconFont;   // íconos
+        private static TMP_FontAsset _readable;   // Atkinson Hyperlegible (opción para subtítulos)
 
-        [MenuItem("Subtítulos/Crear sistema en la escena %&s")] // Ctrl+Alt+S
+        private static readonly Color Clear = new Color(0, 0, 0, 0);
+
+        [MenuItem("Subtítulos/Crear sistema en la escena")]
         public static void Build()
         {
             RemoveExisting();
-
-            _pill = GetOrCreatePillSprite();
-            _font = FindFonts().FirstOrDefault();
+            LoadAssets();
             EnsureFolder("Assets", "StreamingAssets");
 
-            // ---------- Lógica (audio + reconocimiento + ajustes) ----------
+            // ---------- Lógica ----------
             var system = new GameObject("SubtitleSystem");
             var mic = system.AddComponent<MicrophoneCapture>();
             var transcriber = system.AddComponent<VoskTranscriber>();
@@ -50,7 +53,9 @@ namespace Subtitulos.EditorTools
             var settings = system.AddComponent<AccessibilitySettings>();
             Set(detector, "microphone", mic);
             Set(detector, "transcriber", transcriber);
-            SetArray(settings, "fonts", FindFonts().Cast<Object>().ToArray());
+            Set(settings, "transcriber", transcriber);
+            SetArray(settings, "fonts", new Object[] { _font, _readable });
+            SetStrings(settings, "fontNames", "Inter", "Atkinson");
 
             // ---------- Canvas en el mundo ----------
             var canvasGo = new GameObject("SubtitleCanvas", typeof(RectTransform), typeof(Canvas), typeof(GraphicRaycaster));
@@ -60,7 +65,7 @@ namespace Subtitulos.EditorTools
             AddXRRaycaster(canvasGo);
 
             var canvasRect = (RectTransform)canvasGo.transform;
-            canvasRect.sizeDelta = new Vector2(880f, 400f);
+            canvasRect.sizeDelta = new Vector2(900f, 380f);
             canvasRect.localScale = Vector3.one * CanvasScale;
             canvasRect.position = new Vector3(0f, 1.25f, 1.5f);
 
@@ -69,46 +74,46 @@ namespace Subtitulos.EditorTools
 
             RectTransform main = Box("Main", canvasRect);
             Stretch(main);
-            var mainLayout = main.gameObject.AddComponent<HorizontalLayoutGroup>();
-            mainLayout.spacing = 18;
-            mainLayout.childControlWidth = mainLayout.childControlHeight = true;
-            mainLayout.childForceExpandWidth = false;
-            mainLayout.childForceExpandHeight = true;
+            HLayout(main, spacing: 16, expandHeight: true);
 
-            Button settingsButton = BuildLeftColumn(main, mic);
-            SubtitleFeed feed = BuildCenterColumn(main, transcriber, settings, mic, detector);
+            Button settingsButton = BuildRail(main, mic, transcriber);
+            SubtitleFeed feed = BuildCenter(main, transcriber, settings, mic, detector);
             BuildSettingsPanel(canvasRect, settings, feed, follower, settingsButton);
 
             Undo.RegisterCreatedObjectUndo(system, "Crear sistema de subtítulos");
             Undo.RegisterCreatedObjectUndo(canvasGo, "Crear sistema de subtítulos");
             Selection.activeGameObject = canvasGo;
             UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(system.scene);
-
-            if (Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>() == null)
-                Debug.LogWarning("[Subtítulos] No hay EventSystem en la escena: los botones no responderán.");
-
             Debug.Log("[Subtítulos] Interfaz creada.");
         }
 
-        // ---------- Columna izquierda: volumen + botón de ajustes ----------
+        // ---------- Riel izquierdo: estado, volumen y ajustes ----------
 
-        private static Button BuildLeftColumn(RectTransform parent, MicrophoneCapture mic)
+        private static Button BuildRail(RectTransform parent, MicrophoneCapture mic, VoskTranscriber transcriber)
         {
-            RectTransform column = Box("LeftColumn", parent);
-            Layout(column, preferredWidth: 64, minWidth: 64);
-            var layout = column.gameObject.AddComponent<VerticalLayoutGroup>();
-            layout.childAlignment = TextAnchor.LowerCenter;
-            layout.spacing = 10;
-            layout.padding = new RectOffset(0, 0, 8, 8);
-            layout.childControlWidth = layout.childControlHeight = true;
-            layout.childForceExpandWidth = false;
-            layout.childForceExpandHeight = false;
+            RectTransform rail = Pill("Rail", parent, SubtitlePalette.Glass, 1f);
+            Layout(rail, preferredWidth: 64, minWidth: 64);
+            VLayout(rail, spacing: 10, padding: new RectOffset(0, 0, 14, 8), align: TextAnchor.UpperCenter, expandWidth: false);
 
-            // Riel redondeado que recorta el relleno (Mask) para que también se vea redondeado.
-            RectTransform track = Pill("VolumeTrack", column, SubtitlePalette.Track, 1f);
-            Layout(track, preferredWidth: 14, preferredHeight: 190);
+            TextMeshProUGUI micIcon = Icon("MicIcon", rail, Icons.Mic, 30, SubtitlePalette.TextSecondary);
+            Layout((RectTransform)micIcon.transform, preferredWidth: 64, preferredHeight: 32);
+            TextMeshProUGUI lang = Label("Language", rail, "AUTO", 13, TextAlignmentOptions.Center, SubtitlePalette.TextSecondary);
+            lang.fontStyle = FontStyles.Bold;
+            lang.characterSpacing = 8;
+            Layout((RectTransform)lang.transform, preferredWidth: 64, preferredHeight: 16);
+
+            var indicator = rail.gameObject.AddComponent<ListeningIndicator>();
+            Set(indicator, "transcriber", transcriber);
+            Set(indicator, "microphone", mic);
+            Set(indicator, "icon", micIcon);
+            Set(indicator, "languageLabel", lang);
+
+            // Volumen: riel redondeado que recorta el relleno (Mask).
+            RectTransform spacerTop = Box("Space", rail);
+            Layout(spacerTop, flexibleHeight: 1);
+            RectTransform track = Pill("VolumeTrack", rail, SubtitlePalette.Track, 1f);
+            Layout(track, preferredWidth: 8, preferredHeight: 140);
             track.gameObject.AddComponent<Mask>().showMaskGraphic = true;
-
             var fillGo = new GameObject("Fill", typeof(RectTransform), typeof(Image));
             fillGo.transform.SetParent(track, false);
             Stretch((RectTransform)fillGo.transform);
@@ -118,50 +123,40 @@ namespace Subtitulos.EditorTools
             fill.fillMethod = Image.FillMethod.Vertical;
             fill.fillOrigin = (int)Image.OriginVertical.Bottom;
             fill.fillAmount = 0f;
-
-            TextMeshProUGUI volumeLabel = Text("VolumeLabel", column, "Bajo", 17, TextAlignmentOptions.Center,
-                                               SubtitlePalette.TextSecondary);
-            Layout((RectTransform)volumeLabel.transform, preferredWidth: 64, preferredHeight: 24);
-
             var volume = track.gameObject.AddComponent<VolumeBar>();
             Set(volume, "microphone", mic);
             Set(volume, "fill", fill);
-            Set(volume, "label", volumeLabel);
+            RectTransform spacerBottom = Box("Space", rail);
+            Layout(spacerBottom, flexibleHeight: 1);
 
-            // Botón redondo "Aa" (ícono común de ajustes de texto).
-            Button button = MakeButton(column, "SettingsButton", SubtitlePalette.Glass, 1f, out RectTransform rect);
-            Layout(rect, preferredWidth: 56, preferredHeight: 56);
-            TextMeshProUGUI aa = Text("Icon", rect, "Aa", 24, TextAlignmentOptions.Center, SubtitlePalette.Text);
-            aa.fontStyle = FontStyles.Bold;
-            Stretch((RectTransform)aa.transform);
+            Button button = IconButton(rail, "SettingsButton", Icons.Tune, 48, 26,
+                                       new Color(1f, 1f, 1f, 0.10f), SubtitlePalette.Text);
             return button;
         }
 
-        // ---------- Columna central: aviso + subtítulos ----------
+        // ---------- Centro: aviso + subtítulos ----------
 
-        private static SubtitleFeed BuildCenterColumn(RectTransform parent, VoskTranscriber transcriber,
-                                                     AccessibilitySettings settings, MicrophoneCapture mic,
-                                                     LoudSoundDetector detector)
+        private static SubtitleFeed BuildCenter(RectTransform parent, VoskTranscriber transcriber,
+                                                AccessibilitySettings settings, MicrophoneCapture mic,
+                                                LoudSoundDetector detector)
         {
-            RectTransform column = Box("CenterColumn", parent);
+            RectTransform column = Box("Center", parent);
             Layout(column, flexibleWidth: 1);
-            var layout = column.gameObject.AddComponent<VerticalLayoutGroup>();
-            layout.spacing = 10;
-            layout.childAlignment = TextAnchor.LowerCenter;
-            layout.childControlWidth = layout.childControlHeight = true;
-            layout.childForceExpandWidth = true;
-            layout.childForceExpandHeight = false;
+            VLayout(column, spacing: 10, align: TextAnchor.LowerCenter);
 
             // Aviso de sonido fuerte (invisible hasta que haya un evento).
-            RectTransform alert = Pill("SoundAlert", column, SubtitlePalette.Alert, 1f);
-            Layout(alert, preferredHeight: 52);
+            RectTransform alertRow = Box("AlertRow", column);
+            Layout(alertRow, preferredHeight: 48);
+            HLayout(alertRow, align: TextAnchor.MiddleCenter, expandHeight: true);
+            RectTransform alert = Pill("SoundAlert", alertRow, SubtitlePalette.Alert, 1f);
+            Layout(alert, preferredHeight: 44, flexibleHeight: 0);
+            HLayout(alert, spacing: 10, padding: new RectOffset(18, 22, 0, 0), align: TextAnchor.MiddleCenter, expandHeight: true);
             var group = alert.gameObject.AddComponent<CanvasGroup>();
             group.alpha = 0f;
             group.blocksRaycasts = false;
-            TextMeshProUGUI alertText = Text("Text", alert, "Sonido fuerte", 22, TextAlignmentOptions.Center,
-                                             SubtitlePalette.AlertText);
+            Icon("Icon", alert, Icons.Notifications, 24, SubtitlePalette.AlertText);
+            TextMeshProUGUI alertText = Label("Text", alert, "Sonido fuerte", 20, TextAlignmentOptions.Left, SubtitlePalette.AlertText);
             alertText.fontStyle = FontStyles.Bold;
-            Stretch((RectTransform)alertText.transform, 16);
 
             var banner = alert.gameObject.AddComponent<SoundAlertBanner>();
             Set(banner, "detector", detector);
@@ -173,16 +168,10 @@ namespace Subtitulos.EditorTools
             var areaRect = (RectTransform)area.transform;
             areaRect.SetParent(column, false);
             Layout(areaRect, flexibleHeight: 1);
-            var areaLayout = area.AddComponent<VerticalLayoutGroup>();
-            areaLayout.childAlignment = TextAnchor.LowerCenter;
-            areaLayout.spacing = 10;
-            areaLayout.childControlWidth = areaLayout.childControlHeight = true;
-            areaLayout.childForceExpandWidth = true;
-            areaLayout.childForceExpandHeight = false;
+            VLayout(areaRect, spacing: 10, align: TextAnchor.LowerCenter);
 
-            TextMeshProUGUI status = Text("Status", column, "Cargando…", 20, TextAlignmentOptions.Left,
-                                          SubtitlePalette.TextSecondary);
-            Layout((RectTransform)status.transform, preferredHeight: 28);
+            TextMeshProUGUI status = Label("Status", column, "Cargando…", 18, TextAlignmentOptions.Left, SubtitlePalette.TextSecondary);
+            Layout((RectTransform)status.transform, preferredHeight: 24);
 
             var feed = area.AddComponent<SubtitleFeed>();
             Set(feed, "transcriber", transcriber);
@@ -194,56 +183,66 @@ namespace Subtitulos.EditorTools
             return feed;
         }
 
-        // ---------- Panel de ajustes ----------
+        // ---------- Panel de ajustes (lista agrupada) ----------
 
         private static void BuildSettingsPanel(RectTransform canvas, AccessibilitySettings settings, SubtitleFeed feed,
                                                HeadFollowPanel follower, Button toggle)
         {
-            RectTransform panel = Pill("SettingsPanel", canvas, SubtitlePalette.GlassStrong, 3f);
-            // A la derecha de los subtítulos, centrado en vertical.
+            RectTransform panel = Pill("SettingsPanel", canvas, SubtitlePalette.GlassStrong, 2.6f);
             panel.anchorMin = panel.anchorMax = new Vector2(1f, 0.5f);
             panel.pivot = new Vector2(0f, 0.5f);
-            panel.sizeDelta = new Vector2(460f, 0f);
+            panel.sizeDelta = new Vector2(500f, 0f);
             panel.anchoredPosition = new Vector2(24f, 0f);
             panel.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            VLayout(panel, spacing: 6, padding: new RectOffset(20, 20, 16, 20));
 
-            var layout = panel.gameObject.AddComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(18, 18, 16, 18);
-            layout.spacing = 4;
-            layout.childControlWidth = layout.childControlHeight = true;
-            layout.childForceExpandWidth = true;
-            layout.childForceExpandHeight = false;
-
-            // Encabezado: "Ajustes" + "Listo"
-            RectTransform header = Row(panel, "Header", 52, background: false);
-            TextMeshProUGUI title = Text("Title", header, "Ajustes", 30, TextAlignmentOptions.Left, SubtitlePalette.Text);
+            // Encabezado
+            RectTransform header = Box("Header", panel);
+            Layout(header, preferredHeight: 48);
+            HLayout(header, spacing: 10, align: TextAnchor.MiddleLeft);
+            Icon("Icon", header, Icons.Tune, 26, SubtitlePalette.Accent);
+            TextMeshProUGUI title = Label("Title", header, "Ajustes", 26, TextAlignmentOptions.Left, SubtitlePalette.Text);
             title.fontStyle = FontStyles.Bold;
             Layout((RectTransform)title.transform, flexibleWidth: 1);
-            Button close = MakeButton(header, "Close", new Color(0, 0, 0, 0), 1f, out RectTransform closeRect);
-            Layout(closeRect, preferredWidth: 90);
-            Stretch((RectTransform)Text("Text", closeRect, "Listo", 24, TextAlignmentOptions.Right, SubtitlePalette.Accent).transform);
+            Button close = IconButton(header, "Close", Icons.Close, 36, 20, SubtitlePalette.Row, SubtitlePalette.Text);
 
-            Section(panel, "TEXTO");
-            RectTransform sizeRow = Row(panel, "FontSize", 50, background: true);
-            Layout((RectTransform)Text("Name", sizeRow, "Tamaño", 21, TextAlignmentOptions.Left, SubtitlePalette.Text).transform, flexibleWidth: 1);
-            Button smaller = SmallButton(sizeRow, "Smaller", "A-");
-            TextMeshProUGUI sizeValue = Text("Value", sizeRow, "34", 22, TextAlignmentOptions.Center, SubtitlePalette.TextSecondary);
-            Layout((RectTransform)sizeValue.transform, preferredWidth: 46);
-            Button bigger = SmallButton(sizeRow, "Bigger", "A+");
+            // Idioma
+            RectTransform languageGroup = Group(panel, "IDIOMA DE RECONOCIMIENTO");
+            SegmentedControl language = Segmented(Row(languageGroup, null, true), 440, "Español", "English", "Auto");
 
-            Button font = SettingRow(panel, "Fuente", out TextMeshProUGUI fontValue);
-            Button contrast = SettingRow(panel, "Alto contraste", out TextMeshProUGUI contrastValue);
-            Button position = SettingRow(panel, "Posición", out TextMeshProUGUI positionValue);
+            // Texto
+            RectTransform textGroup = Group(panel, "TEXTO");
+            RectTransform sizeRow = Row(textGroup, "Tamaño", false);
+            Button smaller = IconButton(sizeRow, "Smaller", Icons.TextDecrease, 36, 20, SubtitlePalette.Row, SubtitlePalette.Text);
+            TextMeshProUGUI sizeValue = Label("Value", sizeRow, "34", 19, TextAlignmentOptions.Center, SubtitlePalette.TextSecondary);
+            Layout((RectTransform)sizeValue.transform, preferredWidth: 44);
+            Button bigger = IconButton(sizeRow, "Bigger", Icons.TextIncrease, 36, 20, SubtitlePalette.Row, SubtitlePalette.Text);
+            Separator(textGroup);
+            SegmentedControl font = Segmented(Row(textGroup, "Fuente", false), 220, "Inter", "Atkinson");
+            Separator(textGroup);
+            SegmentedControl position = Segmented(Row(textGroup, "Posición", false), 260, "Abajo", "Centro", "Arriba");
+            Separator(textGroup);
+            ToggleSwitch contrast = Toggle(Row(textGroup, "Alto contraste", false));
 
-            Section(panel, "SUBTÍTULOS");
-            Button colors = SettingRow(panel, "Colores por persona", out TextMeshProUGUI colorsValue);
-            Button lines = SettingRow(panel, "Líneas en pantalla", out TextMeshProUGUI linesValue);
-            Button hide = SettingRow(panel, "Ocultar después de", out TextMeshProUGUI hideValue);
-            Button distant = SettingRow(panel, "Ignorar voces lejanas", out TextMeshProUGUI distantValue);
+            // Subtítulos
+            RectTransform subsGroup = Group(panel, "SUBTÍTULOS");
+            ToggleSwitch colors = Toggle(Row(subsGroup, "Color por persona", false));
+            Separator(subsGroup);
+            SegmentedControl lines = Segmented(Row(subsGroup, "Líneas visibles", false), 180, "1", "2", "3");
+            Separator(subsGroup);
+            SegmentedControl hide = Segmented(Row(subsGroup, "Ocultar tras", false), 260, "5 s", "8 s", "15 s", "Nunca");
+            Separator(subsGroup);
+            ToggleSwitch distant = Toggle(Row(subsGroup, "Ignorar voces lejanas", false));
+            Separator(subsGroup);
+            ToggleSwitch uncertain = Toggle(Row(subsGroup, "Atenuar palabras dudosas", false));
 
-            Section(panel, "");
-            Button clear = ActionRow(panel, "Nueva conversación");
-            Button recenter = ActionRow(panel, "Centrar frente a mí");
+            // Acciones
+            RectTransform actions = Box("Actions", panel);
+            Layout(actions, preferredHeight: 50);
+            HLayout(actions, spacing: 10, expandWidth: true, expandHeight: true);
+            actions.GetComponent<HorizontalLayoutGroup>().padding = new RectOffset(0, 0, 8, 0);
+            Button clear = ActionButton(actions, "Clear", Icons.Restart, "Nueva conversación");
+            Button recenter = ActionButton(actions, "Recenter", Icons.Recenter, "Centrar panel");
 
             var component = canvas.gameObject.AddComponent<SettingsPanel>();
             Set(component, "settings", settings);
@@ -252,83 +251,133 @@ namespace Subtitulos.EditorTools
             Set(component, "panelRoot", panel.gameObject);
             Set(component, "toggleButton", toggle);
             Set(component, "closeButton", close);
+            Set(component, "languageControl", language);
             Set(component, "fontSmallerButton", smaller);
             Set(component, "fontBiggerButton", bigger);
-            Set(component, "fontFaceButton", font);
-            Set(component, "contrastButton", contrast);
-            Set(component, "positionButton", position);
-            Set(component, "speakerColorsButton", colors);
-            Set(component, "maxLinesButton", lines);
-            Set(component, "hideAfterButton", hide);
-            Set(component, "distantVoicesButton", distant);
+            Set(component, "fontSizeValue", sizeValue);
+            Set(component, "fontControl", font);
+            Set(component, "contrastToggle", contrast);
+            Set(component, "positionControl", position);
+            Set(component, "speakerColorsToggle", colors);
+            Set(component, "linesControl", lines);
+            Set(component, "hideControl", hide);
+            Set(component, "distantVoicesToggle", distant);
+            Set(component, "uncertainWordsToggle", uncertain);
             Set(component, "clearButton", clear);
             Set(component, "recenterButton", recenter);
-            Set(component, "fontSizeValue", sizeValue);
-            Set(component, "fontFaceValue", fontValue);
-            Set(component, "contrastValue", contrastValue);
-            Set(component, "positionValue", positionValue);
-            Set(component, "speakerColorsValue", colorsValue);
-            Set(component, "maxLinesValue", linesValue);
-            Set(component, "hideAfterValue", hideValue);
-            Set(component, "distantVoicesValue", distantValue);
 
             panel.gameObject.SetActive(false);
         }
 
-        /// <summary>Fila tipo lista: nombre a la izquierda, valor a la derecha. Toda la fila es botón.</summary>
-        private static Button SettingRow(RectTransform panel, string name, out TextMeshProUGUI value)
+        /// <summary>Título de sección + tarjeta redondeada que agrupa filas (estilo lista de ajustes).</summary>
+        private static RectTransform Group(RectTransform panel, string caption)
         {
-            Button button = MakeButton(panel, name, SubtitlePalette.Row, 4f, out RectTransform rect);
-            Layout(rect, preferredHeight: 50);
-            var layout = rect.gameObject.AddComponent<HorizontalLayoutGroup>();
-            layout.padding = new RectOffset(18, 18, 0, 0);
-            layout.childAlignment = TextAnchor.MiddleLeft;
-            layout.childControlWidth = layout.childControlHeight = true;
-            layout.childForceExpandWidth = false;
-            layout.childForceExpandHeight = true;
+            TextMeshProUGUI label = Label("Caption", panel, caption, 13, TextAlignmentOptions.BottomLeft, SubtitlePalette.TextSecondary);
+            label.characterSpacing = 6;
+            label.fontStyle = FontStyles.Bold;
+            label.margin = new Vector4(14, 0, 0, 4);
+            Layout((RectTransform)label.transform, preferredHeight: 30);
 
-            Layout((RectTransform)Text("Name", rect, name, 21, TextAlignmentOptions.Left, SubtitlePalette.Text).transform, flexibleWidth: 1);
-            value = Text("Value", rect, "", 22, TextAlignmentOptions.Right, SubtitlePalette.TextSecondary);
-            Layout((RectTransform)value.transform, preferredWidth: 120);
-            return button;
+            RectTransform card = Pill("Group", panel, SubtitlePalette.Row, 4.5f);
+            VLayout(card, padding: new RectOffset(16, 12, 2, 2));
+            return card;
         }
 
-        private static Button ActionRow(RectTransform panel, string name)
+        /// <summary>Fila de 48 px: nombre a la izquierda, control a la derecha.</summary>
+        private static RectTransform Row(RectTransform group, string name, bool fullWidth)
         {
-            Button button = MakeButton(panel, name, SubtitlePalette.Row, 4f, out RectTransform rect);
-            Layout(rect, preferredHeight: 50);
-            Stretch((RectTransform)Text("Text", rect, name, 21, TextAlignmentOptions.Center, SubtitlePalette.Accent).transform);
-            return button;
-        }
-
-        private static Button SmallButton(RectTransform parent, string name, string text)
-        {
-            Button button = MakeButton(parent, name, new Color(1f, 1f, 1f, 0.12f), 2f, out RectTransform rect);
-            Layout(rect, preferredWidth: 52, preferredHeight: 38);
-            Stretch((RectTransform)Text("Text", rect, text, 20, TextAlignmentOptions.Center, SubtitlePalette.Text).transform);
-            return button;
-        }
-
-        private static RectTransform Row(RectTransform parent, string name, float height, bool background)
-        {
-            RectTransform row = background ? Pill(name, parent, SubtitlePalette.Row, 4f) : Box(name, parent);
-            Layout(row, preferredHeight: height);
-            var layout = row.gameObject.AddComponent<HorizontalLayoutGroup>();
-            layout.padding = new RectOffset(background ? 18 : 4, background ? 12 : 4, 0, 0);
-            layout.spacing = 8;
-            layout.childAlignment = TextAnchor.MiddleLeft;
-            layout.childControlWidth = layout.childControlHeight = true;
-            layout.childForceExpandWidth = false;
-            layout.childForceExpandHeight = false;
+            RectTransform row = Box(name ?? "Row", group);
+            Layout(row, preferredHeight: 48);
+            HLayout(row, spacing: 8, align: fullWidth ? TextAnchor.MiddleCenter : TextAnchor.MiddleLeft);
+            if (name != null)
+            {
+                TextMeshProUGUI label = Label("Name", row, name, 19, TextAlignmentOptions.Left, SubtitlePalette.Text);
+                Layout((RectTransform)label.transform, flexibleWidth: 1);
+            }
             return row;
         }
 
-        private static void Section(RectTransform parent, string title)
+        private static void Separator(RectTransform group)
         {
-            TextMeshProUGUI label = Text("Section", parent, title, 16, TextAlignmentOptions.BottomLeft, SubtitlePalette.TextSecondary);
-            label.characterSpacing = 6;
-            label.margin = new Vector4(6, 0, 0, 2);
-            Layout((RectTransform)label.transform, preferredHeight: string.IsNullOrEmpty(title) ? 6 : 28);
+            var go = new GameObject("Separator", typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(group, false);
+            var image = go.GetComponent<Image>();
+            image.color = SubtitlePalette.Separator;
+            image.raycastTarget = false;
+            Layout((RectTransform)go.transform, preferredHeight: 1);
+        }
+
+        private static SegmentedControl Segmented(RectTransform row, float width, params string[] options)
+        {
+            RectTransform root = Pill("Segmented", row, new Color(1f, 1f, 1f, 0.08f), 1f);
+            Layout(root, preferredWidth: width, preferredHeight: 36);
+            HLayout(root, padding: new RectOffset(3, 3, 3, 3), expandWidth: true, expandHeight: true);
+
+            RectTransform highlight = Pill("Highlight", root, new Color(0.95f, 0.96f, 0.98f, 1f), 1f);
+            highlight.gameObject.AddComponent<LayoutElement>().ignoreLayout = true;
+            highlight.anchorMin = highlight.anchorMax = highlight.pivot = new Vector2(0.5f, 0.5f);
+            highlight.sizeDelta = Vector2.zero; // se acomoda sola en Play
+
+            var buttons = new Object[options.Length];
+            var labels = new Object[options.Length];
+            for (int i = 0; i < options.Length; i++)
+            {
+                var go = new GameObject(options[i], typeof(RectTransform), typeof(Image), typeof(Button));
+                go.transform.SetParent(root, false);
+                go.GetComponent<Image>().color = Clear; // invisible pero recibe el rayo
+                Button button = go.GetComponent<Button>();
+                button.transition = Selectable.Transition.None;
+                buttons[i] = button;
+                TextMeshProUGUI label = Label("Text", go.transform, options[i], 16, TextAlignmentOptions.Center, SubtitlePalette.Text);
+                Stretch((RectTransform)label.transform);
+                labels[i] = label;
+            }
+
+            var control = root.gameObject.AddComponent<SegmentedControl>();
+            Set(control, "highlight", highlight);
+            SetArray(control, "segments", buttons);
+            SetArray(control, "labels", labels);
+            return control;
+        }
+
+        private static ToggleSwitch Toggle(RectTransform row)
+        {
+            RectTransform root = Pill("Toggle", row, new Color(1f, 1f, 1f, 0.18f), 1f);
+            Layout(root, preferredWidth: 54, preferredHeight: 32);
+            root.GetComponent<Image>().raycastTarget = true;
+
+            RectTransform knob = Pill("Knob", root, Color.white, 1f);
+            knob.anchorMin = knob.anchorMax = new Vector2(0f, 0.5f);
+            knob.pivot = new Vector2(0f, 0.5f);
+            knob.sizeDelta = new Vector2(24f, 24f);
+            knob.anchoredPosition = new Vector2(4f, 0f);
+
+            var toggle = root.gameObject.AddComponent<ToggleSwitch>();
+            toggle.targetGraphic = root.GetComponent<Image>();
+            toggle.transition = Selectable.Transition.None;
+            Set(toggle, "knob", knob);
+            Set(toggle, "track", root.GetComponent<Image>());
+            SetColor(toggle, "onColor", SubtitlePalette.Accent);
+            return toggle;
+        }
+
+        private static Button ActionButton(RectTransform parent, string name, string icon, string text)
+        {
+            Button button = MakeButton(parent, name, SubtitlePalette.Row, 4.5f, out RectTransform rect);
+            HLayout(rect, spacing: 8, align: TextAnchor.MiddleCenter);
+            Icon("Icon", rect, icon, 22, SubtitlePalette.Accent);
+            Label("Text", rect, text, 17, TextAlignmentOptions.Left, SubtitlePalette.Accent);
+            return button;
+        }
+
+        private static Button IconButton(Transform parent, string name, string icon, float size, float iconSize,
+                                         Color background, Color iconColor)
+        {
+            Button button = MakeButton(parent, name, background, 1f, out RectTransform rect);
+            Layout(rect, preferredWidth: size, preferredHeight: size, minWidth: size);
+            TextMeshProUGUI glyph = Icon("Icon", rect, icon, iconSize, iconColor);
+            Stretch((RectTransform)glyph.transform);
+            return button;
         }
 
         // ---------- Utilidades de UI ----------
@@ -354,8 +403,8 @@ namespace Subtitulos.EditorTools
             return (RectTransform)go.transform;
         }
 
-        private static TextMeshProUGUI Text(string name, Transform parent, string text, float size,
-                                            TextAlignmentOptions align, Color color)
+        private static TextMeshProUGUI Label(string name, Transform parent, string text, float size,
+                                             TextAlignmentOptions align, Color color)
         {
             var go = new GameObject(name, typeof(RectTransform), typeof(TextMeshProUGUI));
             go.transform.SetParent(parent, false);
@@ -370,22 +419,55 @@ namespace Subtitulos.EditorTools
             return label;
         }
 
+        private static TextMeshProUGUI Icon(string name, Transform parent, string glyph, float size, Color color)
+        {
+            TextMeshProUGUI icon = Label(name, parent, glyph, size, TextAlignmentOptions.Center, color);
+            if (_iconFont != null) icon.font = _iconFont;
+            Layout((RectTransform)icon.transform, preferredWidth: size, preferredHeight: size);
+            return icon;
+        }
+
         private static Button MakeButton(Transform parent, string name, Color color, float roundness, out RectTransform rect)
         {
             rect = Pill(name, parent, color, roundness);
             rect.GetComponent<Image>().raycastTarget = true;
 
             var button = rect.gameObject.AddComponent<Button>();
+            // Al apuntar con el rayo, el fondo se vuelve más opaco (retroalimentación sutil).
             ColorBlock colors = button.colors;
-            // Al apuntar, el fondo se vuelve más opaco (retroalimentación sutil).
             colors.normalColor = Color.white;
             colors.highlightedColor = new Color(1f, 1f, 1f, 2.2f);
             colors.pressedColor = new Color(1f, 1f, 1f, 3.2f);
             colors.selectedColor = Color.white;
+            colors.disabledColor = new Color(1f, 1f, 1f, 0.35f);
             colors.colorMultiplier = 1f;
             colors.fadeDuration = 0.08f;
             button.colors = colors;
             return button;
+        }
+
+        private static void HLayout(RectTransform rect, float spacing = 0, RectOffset padding = null,
+                                    TextAnchor align = TextAnchor.MiddleLeft, bool expandWidth = false, bool expandHeight = false)
+        {
+            var layout = rect.gameObject.AddComponent<HorizontalLayoutGroup>();
+            layout.spacing = spacing;
+            layout.padding = padding ?? new RectOffset();
+            layout.childAlignment = align;
+            layout.childControlWidth = layout.childControlHeight = true;
+            layout.childForceExpandWidth = expandWidth;
+            layout.childForceExpandHeight = expandHeight;
+        }
+
+        private static void VLayout(RectTransform rect, float spacing = 0, RectOffset padding = null,
+                                    TextAnchor align = TextAnchor.UpperLeft, bool expandWidth = true)
+        {
+            var layout = rect.gameObject.AddComponent<VerticalLayoutGroup>();
+            layout.spacing = spacing;
+            layout.padding = padding ?? new RectOffset();
+            layout.childAlignment = align;
+            layout.childControlWidth = layout.childControlHeight = true;
+            layout.childForceExpandWidth = expandWidth;
+            layout.childForceExpandHeight = false;
         }
 
         private static void Layout(RectTransform rect, float preferredHeight = -1, float preferredWidth = -1,
@@ -411,6 +493,21 @@ namespace Subtitulos.EditorTools
 
         // ---------- Assets ----------
 
+        private static void LoadAssets()
+        {
+            _pill = GetOrCreatePillSprite();
+            // Inter (incluida en el template de VR) como font asset dinámico propio: así tiene
+            // todos los caracteres (á, ñ, ¿, ¡, …) aunque el asset original sea estático.
+            _font = FontAssetFactory.GetOrCreate("Assets/VRTemplateAssets/Fonts/Inter/Inter-Regular.ttf", 90, 1024,
+                                                 Root + "/Fonts/Inter-Regular Dynamic SDF.asset");
+            if (_font == null) _font = FontAssetFactory.Find("Inter-Regular SDF");
+            if (_font == null) _font = TMP_Settings.defaultFontAsset;
+            _iconFont = FontAssetFactory.GetOrCreate(Root + "/Fonts/MaterialIconsRound-Regular.otf", 90, 512);
+            _readable = FontAssetFactory.GetOrCreate(Root + "/Fonts/AtkinsonHyperlegible-Regular.ttf");
+            if (_readable == null) _readable = _font;
+            if (_iconFont == null) Debug.LogWarning("[Subtítulos] Sin fuente de íconos: se verán cuadros vacíos.");
+        }
+
         /// <summary>
         /// Crea (una sola vez) un círculo blanco suavizado de 128 px y lo importa como sprite
         /// 9-slice. Estirado se convierte en cápsula o rectángulo redondeado.
@@ -419,7 +516,7 @@ namespace Subtitulos.EditorTools
         {
             if (!File.Exists(PillPath))
             {
-                EnsureFolder("Assets/Subtitulos", "Art");
+                EnsureFolder(Root, "Art");
                 const int size = 128;
                 const float radius = size / 2f;
                 var texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
@@ -447,19 +544,6 @@ namespace Subtitulos.EditorTools
                 importer.SaveAndReimport();
             }
             return AssetDatabase.LoadAssetAtPath<Sprite>(PillPath);
-        }
-
-        /// <summary>Inter primero (limpia, tipo sistema), luego LiberationSans como alternativa.</summary>
-        private static TMP_FontAsset[] FindFonts()
-        {
-            return AssetDatabase.FindAssets("t:TMP_FontAsset")
-                .Select(guid => AssetDatabase.GUIDToAssetPath(guid))
-                .Where(p => !p.Contains("Fallback") && !p.Contains("NoBackface"))
-                .OrderBy(p => p.Contains("Inter") ? 0 : 1)
-                .Select(p => AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(p))
-                .Where(f => f != null)
-                .Take(3)
-                .ToArray();
         }
 
         // ---------- Utilidades del editor ----------
@@ -491,12 +575,28 @@ namespace Subtitulos.EditorTools
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
+        private static void SetColor(Object target, string field, Color value)
+        {
+            var so = new SerializedObject(target);
+            so.FindProperty(field).colorValue = value;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
         private static void SetArray(Object target, string field, Object[] values)
         {
             var so = new SerializedObject(target);
             SerializedProperty prop = so.FindProperty(field);
             prop.arraySize = values.Length;
             for (int i = 0; i < values.Length; i++) prop.GetArrayElementAtIndex(i).objectReferenceValue = values[i];
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void SetStrings(Object target, string field, params string[] values)
+        {
+            var so = new SerializedObject(target);
+            SerializedProperty prop = so.FindProperty(field);
+            prop.arraySize = values.Length;
+            for (int i = 0; i < values.Length; i++) prop.GetArrayElementAtIndex(i).stringValue = values[i];
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

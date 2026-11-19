@@ -29,6 +29,7 @@ en `Assets/StreamingAssets/`:
 | Archivo | Para qué | Tamaño aprox. |
 |---|---|---|
 | `vosk-model-small-es-0.42.zip` | Reconocimiento en español | ~40 MB |
+| `vosk-model-small-en-us-0.15.zip` | Reconocimiento en inglés | ~40 MB |
 | `vosk-model-spk-0.4.zip` | Identificar quién habla (colores por persona) | ~13 MB |
 
 Si cambian de modelo, cambien el nombre en el componente **VoskTranscriber** (campo *Language Model*).
@@ -56,20 +57,41 @@ En el editor de la PC el fondo se ve negro; el mundo real solo se ve en el visor
 - El permiso de micrófono se pide solo al abrir la app.
 - La primera vez que abre, extrae los modelos (unos segundos). Las siguientes ya no.
 
+## Idiomas
+
+En Ajustes → *Idioma de reconocimiento*: **Español**, **English** o **Auto**.
+En Auto el mismo audio entra a los dos modelos y se queda la versión con mayor confianza
+por palabra; cada burbuja muestra el idioma detectado (ES / EN). Si falta uno de los modelos,
+la app usa el que esté disponible.
+
+## Recursos de terceros (todos gratuitos)
+
+| Recurso | Uso | Licencia |
+|---|---|---|
+| Vosk + modelos small-es, small-en-us, spk | Reconocimiento de voz sin internet | Apache 2.0 |
+| Inter (incluida en el template de VR) | Tipografía de la interfaz | SIL OFL |
+| Atkinson Hyperlegible (Braille Institute, Google Fonts) | Fuente opcional de alta legibilidad para subtítulos | SIL OFL |
+| Material Icons Round (Google) | Íconos | Apache 2.0 |
+
 ## Cómo está organizado
 
 | Script | Qué hace |
 |---|---|
 | `Audio/MicrophoneCapture` | Graba del micrófono, calcula el volumen (dB) y reparte el audio. |
 | `Speech/VoskModelLoader` | Extrae los modelos del .zip a una carpeta real (necesario en Android). |
-| `Speech/VoskTranscriber` | Corre Vosk en un hilo aparte; emite texto parcial y frases terminadas. |
+| `Speech/VoskTranscriber` | Corre Vosk (español, inglés o ambos) en un hilo aparte; filtra ruido; emite texto parcial y frases con confianza por palabra. |
 | `Speech/SpeakerTracker` | Agrupa frases por huella de voz para asignar P1, P2, P3... |
 | `Audio/LoudSoundDetector` | Detecta sonidos fuertes que no son voz (golpe corto o sonido continuo). |
 | `UI/SubtitleFeed` | Burbujas por persona; une frases del mismo turno, limita cuántas se ven, las desvanece y filtra voces lejanas. |
 | `UI/VolumeBar` | Barra de volumen con texto (Silencio / Normal / Alto). |
 | `UI/SoundAlertBanner` | Aviso parpadeante cuando hay un sonido fuerte. |
 | `UI/AccessibilitySettings` | Tamaño, fuente, contraste, posición, colores, líneas, auto-ocultar y voces lejanas; se guarda entre sesiones. |
-| `UI/SettingsPanel` | Conecta los botones del panel de ajustes. |
+| `UI/SettingsPanel` | Conecta los controles del panel de ajustes. |
+| `UI/Controls/ToggleSwitch` | Interruptor sí/no animado. |
+| `UI/Controls/SegmentedControl` | Selector de opciones en una fila (idioma, fuente, posición…). |
+| `UI/ListeningIndicator` | Ícono de micrófono con el estado (cargando / escuchando / error) y el idioma. |
+| `UI/Icons` | Códigos de los íconos de Material Icons. |
+| `Editor/FontAssetFactory` | Crea los font assets dinámicos de TextMeshPro. |
 | `UI/HeadFollowPanel` | Mantiene el panel frente a la vista sin que tiemble (se pausa con los ajustes abiertos). |
 | `Editor/SubtitleSceneBuilder` | El menú que arma (o rehace) la interfaz. |
 | `Editor/PassthroughSceneSetup` | El menú que deja la escena lista para realidad mixta. |
@@ -82,3 +104,6 @@ En el editor de la PC el fondo se ve negro; el mundo real solo se ve en el visor
 - El micrófono del visor capta mejor a quien está enfrente; con ruido fuerte la precisión baja.
 - **Ignorar voces lejanas** usa solo el volumen: alguien que habla bajito cerca también se filtra.
   El umbral (*Near Voice Db* en SubtitleFeed) hay que ajustarlo con las pruebas.
+- **Modo Auto** puede equivocarse de idioma en frases de 1-2 palabras; para una conversación en un
+  solo idioma conviene fijarlo. Correr dos modelos usa más CPU que uno.
+- Los modelos pequeños no ponen puntuación; la app solo agrega la mayúscula inicial.

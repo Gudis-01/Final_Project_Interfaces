@@ -1,4 +1,5 @@
 using System;
+using Subtitulos.Speech;
 using TMPro;
 using UnityEngine;
 
@@ -10,6 +11,7 @@ namespace Subtitulos.UI
     [Serializable]
     public class AccessibilityValues
     {
+        public RecognitionLanguage language = RecognitionLanguage.Auto;
         public float fontSize = 34f;
         public int fontIndex = 0;
         public bool highContrast = false;
@@ -19,30 +21,35 @@ namespace Subtitulos.UI
         /// <summary>Cuántas burbujas se ven a la vez (además de la que se está diciendo).</summary>
         public int maxLines = 2;
 
-        /// <summary>Segundos sin hablar antes de que el texto se desvanezca. 0 = nunca.</summary>
-        public float hideAfterSeconds = 8f;
+        /// <summary>Índice en las opciones de "Ocultar después de".</summary>
+        public int hideIndex = 1;
 
         /// <summary>Ignorar voces bajas (gente lejos que no te habla a ti).</summary>
         public bool ignoreDistantVoices = false;
+
+        /// <summary>Mostrar más tenues las palabras de las que el reconocedor no está seguro.</summary>
+        public bool dimUncertainWords = true;
     }
 
     /// <summary>
-    /// Fuente única de los ajustes de accesibilidad. La UI lee de aquí y escucha
-    /// el evento Changed; los botones del panel de ajustes llaman a los métodos públicos.
+    /// Fuente única de los ajustes. La UI lee de aquí y escucha el evento Changed;
+    /// los controles del panel de ajustes llaman a los métodos Set*.
+    /// También le pasa el idioma elegido al transcriptor.
     /// </summary>
     public class AccessibilitySettings : MonoBehaviour
     {
-        private const string PrefsKey = "Subtitulos.Accessibility";
+        private const string PrefsKey = "Subtitulos.Accessibility.v2";
 
-        [SerializeField] private float minFontSize = 22f;
-        [SerializeField] private float maxFontSize = 64f;
+        [SerializeField] private VoskTranscriber transcriber;
+
+        [SerializeField] private float minFontSize = 24f;
+        [SerializeField] private float maxFontSize = 60f;
         [SerializeField] private float fontStep = 4f;
 
         [Tooltip("Fuentes que el usuario puede elegir. La primera es la de default.")]
         [SerializeField] private TMP_FontAsset[] fonts = Array.Empty<TMP_FontAsset>();
-
-        [Tooltip("Opciones para 'Líneas en pantalla'.")]
-        [SerializeField] private int[] lineOptions = { 1, 2, 3 };
+        [Tooltip("Nombre que se muestra para cada fuente (mismo orden).")]
+        [SerializeField] private string[] fontNames = Array.Empty<string>();
 
         [Tooltip("Opciones para 'Ocultar después de' (segundos). 0 = nunca.")]
         [SerializeField] private float[] hideOptions = { 5f, 8f, 15f, 0f };
@@ -51,80 +58,41 @@ namespace Subtitulos.UI
 
         public AccessibilityValues Values { get; private set; } = new AccessibilityValues();
 
+        public float MinFontSize => minFontSize;
+        public float MaxFontSize => maxFontSize;
+        public string[] FontNames => fontNames;
+        public float[] HideOptions => hideOptions;
+
+        /// <summary>Segundos antes de desvanecer el texto (0 = nunca).</summary>
+        public float HideAfterSeconds =>
+            hideOptions.Length == 0 ? 0f : hideOptions[Mathf.Clamp(Values.hideIndex, 0, hideOptions.Length - 1)];
+
         /// <summary>Fuente seleccionada, o null para usar la que ya tenga el texto.</summary>
         public TMP_FontAsset CurrentFont =>
             fonts.Length == 0 ? null : fonts[Mathf.Clamp(Values.fontIndex, 0, fonts.Length - 1)];
 
-        public string CurrentFontName
-        {
-            get
-            {
-                if (CurrentFont == null) return "Default";
-                // "Inter-Regular SDF" → "Inter"
-                string name = CurrentFont.name.Replace(" SDF", "");
-                int dash = name.IndexOf('-');
-                return dash > 0 ? name.Substring(0, dash) : name;
-            }
-        }
-
         private void Awake() => Load();
 
-        private void Start() => Changed?.Invoke(Values); // Aplicar valores iniciales.
+        private void Start()
+        {
+            ApplyToTranscriber();
+            Changed?.Invoke(Values); // Aplicar valores iniciales.
+        }
 
-        // ---------- Acciones para botones ----------
+        // ---------- Acciones para los controles ----------
 
+        public void SetLanguage(int index) => Apply(v => v.language = (RecognitionLanguage)Mathf.Clamp(index, 0, 2));
         public void IncreaseFont() => SetFontSize(Values.fontSize + fontStep);
         public void DecreaseFont() => SetFontSize(Values.fontSize - fontStep);
-
-        public void SetFontSize(float size)
-        {
-            Values.fontSize = Mathf.Clamp(size, minFontSize, maxFontSize);
-            Commit();
-        }
-
-        public void NextFont()
-        {
-            if (fonts.Length == 0) return;
-            Values.fontIndex = (Values.fontIndex + 1) % fonts.Length;
-            Commit();
-        }
-
-        public void ToggleContrast()
-        {
-            Values.highContrast = !Values.highContrast;
-            Commit();
-        }
-
-        public void NextPosition()
-        {
-            int count = Enum.GetValues(typeof(SubtitlePosition)).Length;
-            Values.position = (SubtitlePosition)(((int)Values.position + 1) % count);
-            Commit();
-        }
-
-        public void ToggleSpeakerColors()
-        {
-            Values.showSpeakerColors = !Values.showSpeakerColors;
-            Commit();
-        }
-
-        public void NextMaxLines()
-        {
-            Values.maxLines = NextInCycle(lineOptions, Values.maxLines);
-            Commit();
-        }
-
-        public void NextHideAfter()
-        {
-            Values.hideAfterSeconds = NextInCycle(hideOptions, Values.hideAfterSeconds);
-            Commit();
-        }
-
-        public void ToggleDistantVoices()
-        {
-            Values.ignoreDistantVoices = !Values.ignoreDistantVoices;
-            Commit();
-        }
+        public void SetFontSize(float size) => Apply(v => v.fontSize = Mathf.Clamp(size, minFontSize, maxFontSize));
+        public void SetFontIndex(int index) => Apply(v => v.fontIndex = Mathf.Clamp(index, 0, Mathf.Max(0, fonts.Length - 1)));
+        public void SetHighContrast(bool on) => Apply(v => v.highContrast = on);
+        public void SetPosition(int index) => Apply(v => v.position = (SubtitlePosition)Mathf.Clamp(index, 0, 2));
+        public void SetSpeakerColors(bool on) => Apply(v => v.showSpeakerColors = on);
+        public void SetMaxLines(int lines) => Apply(v => v.maxLines = Mathf.Clamp(lines, 1, 3));
+        public void SetHideIndex(int index) => Apply(v => v.hideIndex = Mathf.Clamp(index, 0, hideOptions.Length - 1));
+        public void SetIgnoreDistantVoices(bool on) => Apply(v => v.ignoreDistantVoices = on);
+        public void SetDimUncertainWords(bool on) => Apply(v => v.dimUncertainWords = on);
 
         public void ResetToDefaults()
         {
@@ -132,12 +100,10 @@ namespace Subtitulos.UI
             Commit();
         }
 
-        /// <summary>Devuelve el valor que sigue al actual en la lista (y vuelve al inicio).</summary>
-        private static T NextInCycle<T>(T[] options, T current)
+        private void Apply(Action<AccessibilityValues> change)
         {
-            if (options.Length == 0) return current;
-            int index = Array.IndexOf(options, current);
-            return options[(index + 1) % options.Length];
+            change(Values);
+            Commit();
         }
 
         // ---------- Persistencia ----------
@@ -146,7 +112,13 @@ namespace Subtitulos.UI
         {
             PlayerPrefs.SetString(PrefsKey, JsonUtility.ToJson(Values));
             PlayerPrefs.Save();
+            ApplyToTranscriber();
             Changed?.Invoke(Values);
+        }
+
+        private void ApplyToTranscriber()
+        {
+            if (transcriber != null) transcriber.SetLanguage(Values.language);
         }
 
         private void Load()

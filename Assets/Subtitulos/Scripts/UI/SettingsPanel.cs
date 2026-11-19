@@ -1,3 +1,4 @@
+using Subtitulos.UI.Controls;
 using TMPro;
 using UnityEngine;
 using UnityEngine.Events;
@@ -6,9 +7,12 @@ using UnityEngine.UI;
 namespace Subtitulos.UI
 {
     /// <summary>
-    /// Panel de ajustes de accesibilidad. Cada fila es un botón: al presionarla cambia
-    /// al siguiente valor, y la etiqueta de la derecha siempre muestra el valor actual
-    /// (retroalimentación inmediata, sin menús anidados).
+    /// Panel de ajustes. Cada opción usa el control que mejor le queda:
+    ///   • Interruptor para sí/no (contraste, colores, voces lejanas, palabras dudosas).
+    ///   • Selector segmentado para elegir entre pocas opciones visibles (idioma, fuente,
+    ///     posición, líneas, tiempo).
+    ///   • Botones A− / A+ para el tamaño del texto.
+    /// Todo cambio se aplica al instante en los subtítulos (retroalimentación inmediata).
     /// </summary>
     public class SettingsPanel : MonoBehaviour
     {
@@ -18,31 +22,32 @@ namespace Subtitulos.UI
 
         [Tooltip("Objeto que se muestra/oculta con el botón de ajustes.")]
         [SerializeField] private GameObject panelRoot;
-
-        [Header("Botones")]
         [SerializeField] private Button toggleButton;
         [SerializeField] private Button closeButton;
+
+        [Header("Idioma")]
+        [SerializeField] private SegmentedControl languageControl;
+
+        [Header("Texto")]
         [SerializeField] private Button fontSmallerButton;
         [SerializeField] private Button fontBiggerButton;
-        [SerializeField] private Button fontFaceButton;
-        [SerializeField] private Button contrastButton;
-        [SerializeField] private Button positionButton;
-        [SerializeField] private Button speakerColorsButton;
-        [SerializeField] private Button maxLinesButton;
-        [SerializeField] private Button hideAfterButton;
-        [SerializeField] private Button distantVoicesButton;
+        [SerializeField] private TextMeshProUGUI fontSizeValue;
+        [SerializeField] private SegmentedControl fontControl;
+        [SerializeField] private ToggleSwitch contrastToggle;
+        [SerializeField] private SegmentedControl positionControl;
+
+        [Header("Subtítulos")]
+        [SerializeField] private ToggleSwitch speakerColorsToggle;
+        [SerializeField] private SegmentedControl linesControl;
+        [SerializeField] private SegmentedControl hideControl;
+        [SerializeField] private ToggleSwitch distantVoicesToggle;
+        [SerializeField] private ToggleSwitch uncertainWordsToggle;
+
+        [Header("Acciones")]
         [SerializeField] private Button clearButton;
         [SerializeField] private Button recenterButton;
 
-        [Header("Etiquetas de valor")]
-        [SerializeField] private TextMeshProUGUI fontSizeValue;
-        [SerializeField] private TextMeshProUGUI fontFaceValue;
-        [SerializeField] private TextMeshProUGUI contrastValue;
-        [SerializeField] private TextMeshProUGUI positionValue;
-        [SerializeField] private TextMeshProUGUI speakerColorsValue;
-        [SerializeField] private TextMeshProUGUI maxLinesValue;
-        [SerializeField] private TextMeshProUGUI hideAfterValue;
-        [SerializeField] private TextMeshProUGUI distantVoicesValue;
+        private bool _initialized;
 
         private void Awake()
         {
@@ -50,15 +55,19 @@ namespace Subtitulos.UI
             Bind(closeButton, () => SetOpen(false));
             Bind(fontSmallerButton, () => settings.DecreaseFont());
             Bind(fontBiggerButton, () => settings.IncreaseFont());
-            Bind(fontFaceButton, () => settings.NextFont());
-            Bind(contrastButton, () => settings.ToggleContrast());
-            Bind(positionButton, () => settings.NextPosition());
-            Bind(speakerColorsButton, () => settings.ToggleSpeakerColors());
-            Bind(maxLinesButton, () => settings.NextMaxLines());
-            Bind(hideAfterButton, () => settings.NextHideAfter());
-            Bind(distantVoicesButton, () => settings.ToggleDistantVoices());
             Bind(clearButton, () => { if (feed != null) feed.Clear(); });
             Bind(recenterButton, () => { if (follower != null) follower.Recenter(); });
+
+            if (languageControl != null) languageControl.Changed += i => settings.SetLanguage(i);
+            if (fontControl != null) fontControl.Changed += i => settings.SetFontIndex(i);
+            if (positionControl != null) positionControl.Changed += i => settings.SetPosition(i);
+            if (linesControl != null) linesControl.Changed += i => settings.SetMaxLines(i + 1);
+            if (hideControl != null) hideControl.Changed += i => settings.SetHideIndex(i);
+
+            if (contrastToggle != null) contrastToggle.Changed += on => settings.SetHighContrast(on);
+            if (speakerColorsToggle != null) speakerColorsToggle.Changed += on => settings.SetSpeakerColors(on);
+            if (distantVoicesToggle != null) distantVoicesToggle.Changed += on => settings.SetIgnoreDistantVoices(on);
+            if (uncertainWordsToggle != null) uncertainWordsToggle.Changed += on => settings.SetDimUncertainWords(on);
 
             SetOpen(false);
         }
@@ -89,46 +98,31 @@ namespace Subtitulos.UI
             if (follower != null) follower.Paused = open;
         }
 
+        /// <summary>Pone cada control en el valor actual (sin volver a disparar eventos).</summary>
         private void Refresh(AccessibilityValues v)
         {
-            SetText(fontSizeValue, Mathf.RoundToInt(v.fontSize).ToString());
-            SetText(fontFaceValue, settings.CurrentFontName);
-            SetToggle(contrastValue, v.highContrast);
-            SetText(positionValue, PositionName(v.position));
-            SetToggle(speakerColorsValue, v.showSpeakerColors);
-            SetText(maxLinesValue, v.maxLines.ToString());
-            SetText(hideAfterValue, v.hideAfterSeconds <= 0f ? "Nunca" : $"{v.hideAfterSeconds:0} s");
-            SetToggle(distantVoicesValue, v.ignoreDistantVoices);
-        }
+            bool instant = !_initialized;
+            _initialized = true;
 
-        private static string PositionName(SubtitlePosition p)
-        {
-            switch (p)
-            {
-                case SubtitlePosition.Top: return "Arriba";
-                case SubtitlePosition.Middle: return "Centro";
-                default: return "Abajo";
-            }
+            languageControl?.Select((int)v.language);
+            fontControl?.Select(v.fontIndex);
+            positionControl?.Select((int)v.position);
+            linesControl?.Select(v.maxLines - 1);
+            hideControl?.Select(v.hideIndex);
+
+            contrastToggle?.SetValue(v.highContrast, instant: instant);
+            speakerColorsToggle?.SetValue(v.showSpeakerColors, instant: instant);
+            distantVoicesToggle?.SetValue(v.ignoreDistantVoices, instant: instant);
+            uncertainWordsToggle?.SetValue(v.dimUncertainWords, instant: instant);
+
+            if (fontSizeValue != null) fontSizeValue.text = Mathf.RoundToInt(v.fontSize).ToString();
+            if (fontSmallerButton != null) fontSmallerButton.interactable = v.fontSize > settings.MinFontSize;
+            if (fontBiggerButton != null) fontBiggerButton.interactable = v.fontSize < settings.MaxFontSize;
         }
 
         private static void Bind(Button button, UnityAction action)
         {
             if (button != null) button.onClick.AddListener(action);
-        }
-
-        private static void SetText(TextMeshProUGUI label, string text)
-        {
-            if (label == null) return;
-            label.text = text;
-            label.color = SubtitlePalette.TextSecondary;
-        }
-
-        /// <summary>Los interruptores se muestran como "Sí" (en color) o "No" (gris).</summary>
-        private static void SetToggle(TextMeshProUGUI label, bool on)
-        {
-            if (label == null) return;
-            label.text = on ? "Sí" : "No";
-            label.color = on ? SubtitlePalette.Accent : SubtitlePalette.TextSecondary;
         }
     }
 }
