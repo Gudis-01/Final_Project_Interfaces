@@ -24,6 +24,9 @@ namespace Subtitulos.UI
         [Tooltip("Por encima de esto se considera fuerte.")]
         [SerializeField] private float loudDb = -20f;
 
+        [Tooltip("Sube la barra para que reaccione con voces normales (dB extra).")]
+        [SerializeField] private float sensitivityBoostDb = 14f;
+
         [Tooltip("Suavizado de la barra. Más alto = reacciona más rápido.")]
         [SerializeField] private float smoothing = 12f;
 
@@ -35,10 +38,10 @@ namespace Subtitulos.UI
             if (microphone == null || fill == null) return;
 
             float t = 1f - Mathf.Exp(-smoothing * Time.deltaTime);
-            _displayed = Mathf.Lerp(_displayed, microphone.NormalizedLevel, t);
+            _displayed = Mathf.Lerp(_displayed, Mathf.InverseLerp(-80f, 0f, microphone.LevelDb + sensitivityBoostDb), t);
             fill.fillAmount = _displayed;
 
-            float db = microphone.LevelDb;
+            float db = microphone.LevelDb + sensitivityBoostDb;
             Color target;
             string text;
             if (db < quietDb) { target = SubtitlePalette.VolumeQuiet; text = "Bajo"; }

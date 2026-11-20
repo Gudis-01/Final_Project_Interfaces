@@ -65,7 +65,7 @@ namespace Subtitulos.Speech
         [SerializeField] private string speakerModel = "vosk-model-spk-0.4";
 
         [Header("Reconocimiento")]
-        [SerializeField] private RecognitionLanguage language = RecognitionLanguage.Auto;
+        [SerializeField] private RecognitionLanguage language = RecognitionLanguage.English;
         [Tooltip("Tamaño de cada bloque enviado a Vosk. Menos = más rápido en pantalla, más CPU.")]
         [SerializeField, Range(50, 500)] private int chunkMilliseconds = 100;
         [Tooltip("En modo automático: cuánto esperar (s) a que el otro idioma termine la frase antes de decidir.")]
@@ -102,6 +102,10 @@ namespace Subtitulos.Speech
         public float LastSpeechTime { get; private set; } = float.NegativeInfinity;
 
         public SpeakerTracker Speakers { get; private set; }
+
+        // Modelos más precisos (opcionales): si el .zip está en StreamingAssets se usan automáticamente.
+        private const string BigEnglishModel = ""; // desactivado: el lgraph es muy lento en el Quest
+        private const string BigSpanishModel = "";
 
         private const string Es = "es";
         private const string En = "en";
@@ -157,11 +161,21 @@ namespace Subtitulos.Speech
             var paths = new Dictionary<string, string>();
             string spkPath = null;
 
-            foreach (var (code, name) in new[] { (Es, spanishModel), (En, englishModel) })
+            // Para cada idioma se prueba primero el modelo grande (más preciso) y, si no está en
+            // StreamingAssets, el pequeño.
+            foreach (var (code, names) in new[]
             {
-                if (string.IsNullOrEmpty(name)) continue;
-                yield return VoskModelLoader.Prepare(name, p => paths[code] = p,
-                    e => Debug.LogWarning($"[Subtítulos] Sin modelo '{code}': {e}"));
+                (Es, new[] { BigSpanishModel, spanishModel }),
+                (En, new[] { BigEnglishModel, englishModel }),
+            })
+            {
+                foreach (string name in names)
+                {
+                    if (string.IsNullOrEmpty(name) || paths.ContainsKey(code)) continue;
+                    yield return VoskModelLoader.Prepare(name, p => paths[code] = p,
+                        e => Debug.Log($"[Subtítulos] Modelo '{name}' no disponible: {e}"));
+                    if (paths.ContainsKey(code)) Debug.Log($"[Subtítulos] Modelo {code}: {name}");
+                }
             }
 
             if (paths.Count == 0)
@@ -252,7 +266,8 @@ namespace Subtitulos.Speech
         /// <summary>Recibe audio del micrófono, lo convierte a 16 bits y lo junta en bloques.</summary>
         private void OnSamples(float[] samples, int count)
         {
-            int chunkSize = Mathf.Max(1, _mic.SampleRate * chunkMilliseconds / 1000);
+            // Bloques de al menos 150 ms: más chicos gastan CPU en cada resultado parcial sin verse más rápido.
+            int chunkSize = Mathf.Max(1, _mic.SampleRate * Mathf.Max(chunkMilliseconds, 150) / 1000);
             if (_pending.Length != chunkSize)
             {
                 _pending = new short[chunkSize];
@@ -274,11 +289,11 @@ namespace Subtitulos.Speech
 
         private void StartWorker()
         {
-            _audioQueue = new BlockingCollection<short[]>(boundedCapacity: 50);
+            _audioQueue = new BlockingCollection<short[]>(boundedCapacity: 120);
             _cancel = new CancellationTokenSource();
             CancellationToken token = _cancel.Token;
 
-            _worker = new Thread(() => RecognitionLoop(token)) { IsBackground = true, Name = "VoskRecognition" };
+            _worker = new Thread(() => RecognitionLoop(token)) { IsBackground = true, Name = "VoskRecognition", Priority = System.Threading.ThreadPriority.AboveNormal };
             _worker.Start();
         }
 
@@ -295,7 +310,11 @@ namespace Subtitulos.Speech
                         {
                             if (!IsActive(pair.Key)) continue;
                             bool ended = pair.Value.AcceptWaveform(chunk, chunk.Length);
-                            _results.Enqueue((pair.Key, ended, ended ? pair.Value.Result() : pair.Value.PartialResult()));
+                            if (ended)
+                                _results.Enqueue((pair.Key, true, pair.Value.Result()));
+                            else if (_audioQueue.Count <= 1)
+                                // Si va atrasado se salta el texto provisional (es lo que más CPU gasta) hasta ponerse al corriente.
+                                _results.Enqueue((pair.Key, false, pair.Value.PartialResult()));
                         }
                     }
                 }

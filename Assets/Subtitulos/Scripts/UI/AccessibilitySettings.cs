@@ -11,15 +11,15 @@ namespace Subtitulos.UI
     [Serializable]
     public class AccessibilityValues
     {
-        public RecognitionLanguage language = RecognitionLanguage.Auto;
-        public float fontSize = 34f;
+        public RecognitionLanguage language = RecognitionLanguage.English;
+        public float fontSize = 28f;
         public int fontIndex = 0;
         public bool highContrast = false;
         public SubtitlePosition position = SubtitlePosition.Bottom;
         public bool showSpeakerColors = true;
 
         /// <summary>Cuántas burbujas se ven a la vez (además de la que se está diciendo).</summary>
-        public int maxLines = 2;
+        public int maxLines = 1;
 
         /// <summary>Índice en las opciones de "Ocultar después de".</summary>
         public int hideIndex = 1;
@@ -38,7 +38,7 @@ namespace Subtitulos.UI
     /// </summary>
     public class AccessibilitySettings : MonoBehaviour
     {
-        private const string PrefsKey = "Subtitulos.Accessibility.v2";
+        private const string PrefsKey = "Subtitulos.Accessibility.v5";
 
         [SerializeField] private VoskTranscriber transcriber;
 
@@ -118,7 +118,10 @@ namespace Subtitulos.UI
 
         private void ApplyToTranscriber()
         {
-            if (transcriber != null) transcriber.SetLanguage(Values.language);
+            if (transcriber == null) return;
+            transcriber.SetLanguage(Values.language);
+            var mic = transcriber.GetComponent<Subtitulos.Audio.MicrophoneCapture>();
+            if (mic != null) mic.NearVoiceOnly = Values.ignoreDistantVoices;
         }
 
         private void Load()
