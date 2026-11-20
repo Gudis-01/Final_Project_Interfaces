@@ -30,7 +30,7 @@ namespace Subtitulos.UI
         public static readonly Color TextSecondary = new Color(0.97f, 0.97f, 0.98f, 0.62f);
 
         /// <summary>Fondo de vidrio oscuro para burbujas y paneles.</summary>
-        public static readonly Color Glass = new Color(0.07f, 0.07f, 0.09f, 0.74f);
+        public static readonly Color Glass = new Color(0.05f, 0.05f, 0.07f, 0.52f);
         public static readonly Color GlassStrong = new Color(0.09f, 0.09f, 0.11f, 0.92f);
         public static readonly Color Row = new Color(1f, 1f, 1f, 0.07f);
         public static readonly Color Separator = new Color(1f, 1f, 1f, 0.10f);

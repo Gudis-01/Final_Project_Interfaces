@@ -17,7 +17,7 @@ namespace Subtitulos.UI
         [SerializeField] private float distance = 1.5f;
 
         [Header("Altura según la posición elegida (metros respecto a los ojos)")]
-        [SerializeField] private float bottomOffset = -0.30f;
+        [SerializeField] private float bottomOffset = -0.36f;
         [SerializeField] private float middleOffset = 0f;
         [SerializeField] private float topOffset = 0.25f;
 

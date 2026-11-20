@@ -1,23 +1,27 @@
 using Subtitulos.Audio;
 using TMPro;
 using UnityEngine;
-using UnityEngine.UI;
+using UnityEngine.XR;
 
 namespace Subtitulos.UI
 {
     /// <summary>
-    /// Aviso visual cuando el LoudSoundDetector escucha un sonido fuerte.
-    /// Aparece arriba de los subtítulos con un pulso suave (llama la atención
-    /// sin ser molesto) y se desvanece solo.
+    /// Aviso de sonido fuerte lo menos invasivo posible: un ícono pequeño en el riel lateral
+    /// (fuera del centro de la vista) que pulsa unos segundos, más una vibración corta en los
+    /// controles. No lleva texto ni tapa los subtítulos. Un golpe pulsa una vez; un sonido
+    /// continuo (alarma, sirena) pulsa más tiempo.
     /// </summary>
     public class SoundAlertBanner : MonoBehaviour
     {
         [SerializeField] private LoudSoundDetector detector;
         [SerializeField] private CanvasGroup group;
+        [Tooltip("Opcional. Si existe, se deja vacío (el aviso es solo el ícono).")]
         [SerializeField] private TextMeshProUGUI label;
 
-        [SerializeField] private float visibleSeconds = 4f;
+        [SerializeField] private float impactSeconds = 2f;
+        [SerializeField] private float sustainedSeconds = 5f;
         [SerializeField] private float fadeSpeed = 8f;
+        [SerializeField] private bool vibrate = true;
 
         private float _hideAt = -1f;
 
@@ -25,6 +29,7 @@ namespace Subtitulos.UI
         {
             if (detector != null) detector.SoundDetected += Show;
             if (group != null) group.alpha = 0f;
+            if (label != null) label.gameObject.SetActive(false);
         }
 
         private void OnDisable()
@@ -34,13 +39,18 @@ namespace Subtitulos.UI
 
         private void Show(LoudSoundDetector.SoundKind kind, float levelDb)
         {
-            if (label != null)
+            bool sustained = kind == LoudSoundDetector.SoundKind.Sustained;
+            _hideAt = Time.time + (sustained ? sustainedSeconds : impactSeconds);
+            if (vibrate) Vibrate(sustained ? 0.8f : 0.5f, sustained ? 0.5f : 0.2f);
+        }
+
+        private static void Vibrate(float amplitude, float seconds)
+        {
+            foreach (XRNode node in new[] { XRNode.LeftHand, XRNode.RightHand })
             {
-                label.text = kind == LoudSoundDetector.SoundKind.Sustained
-                    ? "Sonido fuerte continuo · alarma, sirena o timbre"
-                    : "Golpe o sonido fuerte cerca";
+                InputDevice device = InputDevices.GetDeviceAtXRNode(node);
+                if (device.isValid) device.SendHapticImpulse(0, amplitude, seconds);
             }
-            _hideAt = Time.time + visibleSeconds;
         }
 
         private void Update()
@@ -48,8 +58,7 @@ namespace Subtitulos.UI
             if (group == null) return;
 
             bool visible = _hideAt > 0f && Time.time < _hideAt;
-            // Pulso suave entre 75% y 100% mientras está visible.
-            float target = visible ? 0.875f + 0.125f * Mathf.Sin(Time.time * 5f) : 0f;
+            float target = visible ? 0.7f + 0.3f * Mathf.Sin(Time.time * 7f) : 0f;
             group.alpha = Mathf.Lerp(group.alpha, target, 1f - Mathf.Exp(-fadeSpeed * Time.deltaTime));
         }
     }
