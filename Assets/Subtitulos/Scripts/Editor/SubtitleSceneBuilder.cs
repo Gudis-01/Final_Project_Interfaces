@@ -65,7 +65,7 @@ namespace Subtitulos.EditorTools
             AddXRRaycaster(canvasGo);
 
             var canvasRect = (RectTransform)canvasGo.transform;
-            canvasRect.sizeDelta = new Vector2(900f, 380f);
+            canvasRect.sizeDelta = new Vector2(820f, 300f);
             canvasRect.localScale = Vector3.one * CanvasScale;
             canvasRect.position = new Vector3(0f, 1.25f, 1.5f);
 
@@ -74,9 +74,9 @@ namespace Subtitulos.EditorTools
 
             RectTransform main = Box("Main", canvasRect);
             Stretch(main);
-            HLayout(main, spacing: 16, expandHeight: true);
+            HLayout(main, spacing: 56, expandHeight: true); // el riel (con la barra de volumen) queda separado de los subtítulos
 
-            Button settingsButton = BuildRail(main, mic, transcriber);
+            Button settingsButton = BuildRail(main, mic, transcriber, detector);
             SubtitleFeed feed = BuildCenter(main, transcriber, settings, mic, detector);
             BuildSettingsPanel(canvasRect, settings, feed, follower, settingsButton);
 
@@ -89,7 +89,8 @@ namespace Subtitulos.EditorTools
 
         // ---------- Riel izquierdo: estado, volumen y ajustes ----------
 
-        private static Button BuildRail(RectTransform parent, MicrophoneCapture mic, VoskTranscriber transcriber)
+        private static Button BuildRail(RectTransform parent, MicrophoneCapture mic, VoskTranscriber transcriber,
+                                         LoudSoundDetector detector)
         {
             RectTransform rail = Pill("Rail", parent, SubtitlePalette.Glass, 1f);
             Layout(rail, preferredWidth: 64, minWidth: 64);
@@ -108,14 +109,33 @@ namespace Subtitulos.EditorTools
             Set(indicator, "icon", micIcon);
             Set(indicator, "languageLabel", lang);
 
+            // Aviso de sonido fuerte: solo un ícono pequeño que pulsa (no tapa los subtítulos).
+            RectTransform alert = Pill("SoundAlert", rail, SubtitlePalette.Alert, 1f);
+            Layout(alert, preferredWidth: 40, preferredHeight: 40);
+            var alertGroup = alert.gameObject.AddComponent<CanvasGroup>();
+            alertGroup.alpha = 0f;
+            alertGroup.blocksRaycasts = false;
+            TextMeshProUGUI bell = Icon("Icon", alert, Icons.Notifications, 24, SubtitlePalette.AlertText);
+            Stretch((RectTransform)bell.transform);
+            bell.alignment = TextAlignmentOptions.Center;
+            var banner = alert.gameObject.AddComponent<SoundAlertBanner>();
+            Set(banner, "detector", detector);
+            Set(banner, "group", alertGroup);
+
             // Volumen: riel redondeado que recorta el relleno (Mask).
             RectTransform spacerTop = Box("Space", rail);
             Layout(spacerTop, flexibleHeight: 1);
             RectTransform track = Pill("VolumeTrack", rail, SubtitlePalette.Track, 1f);
-            Layout(track, preferredWidth: 8, preferredHeight: 140);
-            track.gameObject.AddComponent<Mask>().showMaskGraphic = true;
+            Layout(track, preferredWidth: 26, preferredHeight: 140);
+            // El relleno ocupa todo el ancho de la barra con un margen mínimo (4 px), recortado en forma de píldora.
+            RectTransform inner = Pill("FillMask", track, Color.white, 1f);
+            inner.anchorMin = Vector2.zero;
+            inner.anchorMax = Vector2.one;
+            inner.offsetMin = new Vector2(4f, 4f);
+            inner.offsetMax = new Vector2(-4f, -4f);
+            inner.gameObject.AddComponent<Mask>().showMaskGraphic = false;
             var fillGo = new GameObject("Fill", typeof(RectTransform), typeof(Image));
-            fillGo.transform.SetParent(track, false);
+            fillGo.transform.SetParent(inner, false);
             Stretch((RectTransform)fillGo.transform);
             Image fill = fillGo.GetComponent<Image>();
             fill.raycastTarget = false;
@@ -143,25 +163,6 @@ namespace Subtitulos.EditorTools
             RectTransform column = Box("Center", parent);
             Layout(column, flexibleWidth: 1);
             VLayout(column, spacing: 10, align: TextAnchor.LowerCenter);
-
-            // Aviso de sonido fuerte (invisible hasta que haya un evento).
-            RectTransform alertRow = Box("AlertRow", column);
-            Layout(alertRow, preferredHeight: 48);
-            HLayout(alertRow, align: TextAnchor.MiddleCenter, expandHeight: true);
-            RectTransform alert = Pill("SoundAlert", alertRow, SubtitlePalette.Alert, 1f);
-            Layout(alert, preferredHeight: 44, flexibleHeight: 0);
-            HLayout(alert, spacing: 10, padding: new RectOffset(18, 22, 0, 0), align: TextAnchor.MiddleCenter, expandHeight: true);
-            var group = alert.gameObject.AddComponent<CanvasGroup>();
-            group.alpha = 0f;
-            group.blocksRaycasts = false;
-            Icon("Icon", alert, Icons.Notifications, 24, SubtitlePalette.AlertText);
-            TextMeshProUGUI alertText = Label("Text", alert, "Sonido fuerte", 20, TextAlignmentOptions.Left, SubtitlePalette.AlertText);
-            alertText.fontStyle = FontStyles.Bold;
-
-            var banner = alert.gameObject.AddComponent<SoundAlertBanner>();
-            Set(banner, "detector", detector);
-            Set(banner, "group", group);
-            Set(banner, "label", alertText);
 
             // Zona de subtítulos: lo más nuevo siempre abajo.
             var area = new GameObject("Subtitles", typeof(RectTransform), typeof(RectMask2D));

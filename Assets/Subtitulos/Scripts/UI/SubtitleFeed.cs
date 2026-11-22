@@ -58,6 +58,7 @@ namespace Subtitulos.UI
             public int SpeakerId = SpeakerTracker.Unknown;
             public string Language = "";
             public string Text = "";                                   // texto provisional (burbuja en vivo)
+            public string Partial = "";                                // texto provisional agregado al final de una burbuja existente
             public readonly List<RecognizedWord> Words = new List<RecognizedWord>(); // frases terminadas
             public float LastUpdate;
             public bool Removing;
@@ -134,16 +135,33 @@ namespace Subtitulos.UI
         private void OnPartial(string text)
         {
             if (_live == null) return;
-            bool tooQuiet = Values.ignoreDistantVoices && _peakDb < nearVoiceDb;
-            _live.Text = tooQuiet ? "" : text;
+            bool tooQuiet = false; // las voces lejanas ya se filtran en MicrophoneCapture
+            if (tooQuiet) text = "";
+
+            // Si la misma persona sigue hablando, lo provisional se escribe al final de su burbuja
+            // (en vez de abrir otra caja y luego "saltar" a la anterior).
+            Bubble host = _finished.Count > 0 ? _finished[_finished.Count - 1] : null;
+            if (host != null && (Time.time - host.LastUpdate >= mergeSeconds || host.Removing)) host = null;
+
+            foreach (Bubble b in _finished)
+            {
+                string wanted = b == host ? text : "";
+                if (b.Partial == wanted) continue;
+                b.Partial = wanted;
+                Render(b, isLive: false);
+            }
+            if (host != null && text.Length > 0) host.LastUpdate = Time.time; // mientras hablan no se oculta
+
+            _live.Text = host != null ? "" : text;
             Render(_live, isLive: true);
         }
 
         private void OnFinal(TranscriptSegment segment)
         {
             if (_live == null || segment.Words.Count == 0) return;
-            bool tooQuiet = Values.ignoreDistantVoices && _peakDb < nearVoiceDb;
+            bool tooQuiet = false; // las voces lejanas ya se filtran en MicrophoneCapture
             _peakDb = -80f;
+            foreach (Bubble b in _finished) b.Partial = "";
             _live.Text = "";
             Render(_live, isLive: true);
             if (tooQuiet) return;
@@ -241,7 +259,7 @@ namespace Subtitulos.UI
         /// <summary>Arma el texto con las palabras dudosas más tenues (opacidad baja).</summary>
         private string BuildText(Bubble bubble, bool isLive, AccessibilityValues v)
         {
-            if (isLive) return "<noparse>" + bubble.Text + "</noparse>";
+            if (isLive) return PartialMarkup(bubble.Text, false);
 
             var sb = new System.Text.StringBuilder();
             bool trimmed = false;
@@ -255,7 +273,29 @@ namespace Subtitulos.UI
                 if (dim) sb.Append("<alpha=#FF>");
                 trimmed |= i == 0 && w.Text.Length > 0 && char.IsLower(w.Text[0]);
             }
+            if (bubble.Partial.Length > 0) sb.Append(' ').Append(PartialMarkup(bubble.Partial, true));
             return (trimmed ? "… " : "") + sb;
+        }
+
+        /// <summary>
+        /// Texto provisional: lo que Vosk ya no suele cambiar (todo menos las últimas 2 palabras)
+        /// se ve normal; las últimas palabras, que todavía pueden corregirse, se ven tenues.
+        /// </summary>
+        private static string PartialMarkup(string text, bool normalFirst)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            string[] words = text.Split(' ');
+            int stable = Mathf.Max(0, words.Length - 2);
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < words.Length; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                bool tail = i >= stable;
+                if (tail) sb.Append("<alpha=#99>");
+                sb.Append("<noparse>").Append(words[i]).Append("</noparse>");
+                if (tail) sb.Append("<alpha=#FF>");
+            }
+            return sb.ToString();
         }
 
         // ---------- Construcción y dibujo ----------
@@ -269,12 +309,12 @@ namespace Subtitulos.UI
             root.GetComponent<LayoutElement>().flexibleHeight = 0f;
 
             var background = root.GetComponent<Image>();
-            ApplySprite(background, 2f);
+            ApplySprite(background, 3f);
             background.raycastTarget = false;
 
             var layout = root.GetComponent<HorizontalLayoutGroup>();
-            layout.padding = new RectOffset(20, 24, 14, 14);
-            layout.spacing = 16;
+            layout.padding = new RectOffset(14, 18, 8, 8);
+            layout.spacing = 12;
             layout.childAlignment = TextAnchor.MiddleLeft;
             layout.childControlWidth = layout.childControlHeight = true;
             layout.childForceExpandWidth = false;
@@ -287,7 +327,7 @@ namespace Subtitulos.UI
             ApplySprite(accent, 8f);
             accent.raycastTarget = false;
             var accentLayout = accentGo.GetComponent<LayoutElement>();
-            accentLayout.preferredWidth = accentLayout.minWidth = 6;
+            accentLayout.preferredWidth = accentLayout.minWidth = 4;
 
             var textGo = new GameObject("Text", typeof(RectTransform), typeof(TextMeshProUGUI), typeof(LayoutElement));
             textGo.transform.SetParent(root.transform, false);
@@ -298,7 +338,7 @@ namespace Subtitulos.UI
             label.textWrappingMode = TextWrappingModes.Normal;
             label.richText = true;
             label.raycastTarget = false;
-            label.lineSpacing = 4;
+            label.lineSpacing = 0;
 
             var group = root.GetComponent<CanvasGroup>();
             group.alpha = 0f; // aparece con fade
@@ -321,7 +361,7 @@ namespace Subtitulos.UI
         /// </summary>
         private void FitHeight(Bubble bubble)
         {
-            const float horizontalChrome = 20 + 24 + 16 + 6; // padding + espacio + barrita de color
+            const float horizontalChrome = 14 + 18 + 12 + 4; // padding + espacio + barrita de color
             float width = container.rect.width - horizontalChrome;
             if (width < 20f) return;
             Vector2 size = bubble.Label.GetPreferredValues(bubble.Label.text, width, 0f);
@@ -349,7 +389,7 @@ namespace Subtitulos.UI
             bubble.Accent.gameObject.SetActive(!isLive || v.highContrast);
 
             bubble.Label.fontSize = v.fontSize;
-            bubble.Label.color = isLive && !v.highContrast ? SubtitlePalette.TextSecondary : SubtitlePalette.Text;
+            bubble.Label.color = SubtitlePalette.Text;
             if (settings != null && settings.CurrentFont != null) bubble.Label.font = settings.CurrentFont;
 
             // Etiqueta pequeña: persona (en su color) y, en modo automático, el idioma detectado.

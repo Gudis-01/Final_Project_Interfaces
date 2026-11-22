@@ -24,7 +24,36 @@ namespace Subtitulos.Audio
         [Tooltip("Iniciar al arrancar la escena.")]
         [SerializeField] private bool startOnAwake = true;
 
+        [Header("Sensibilidad (para el reconocimiento de voz)")]
+        [Tooltip("Amplifica el audio que se manda a Vosk. Los micrófonos del visor suelen captar bajito.")]
+        [SerializeField] private bool autoGain = true;
+        [Tooltip("Ganancia mínima siempre aplicada (1 = sin cambio).")]
+        [SerializeField, Range(1f, 8f)] private float baseGain = 3f;
+        [Tooltip("Ganancia máxima que puede subir sola cuando alguien habla bajito.")]
+        [SerializeField, Range(1f, 40f)] private float maxAutoGain = 30f;
+        [Tooltip("Volumen objetivo (RMS 0..1) al que trata de llegar la voz.")]
+        [SerializeField, Range(0.02f, 0.4f)] private float targetRms = 0.12f;
+        [Tooltip("Por debajo de este volumen (RMS) se considera silencio y la ganancia no sube (evita amplificar ruido).")]
+        [SerializeField, Range(0.0003f, 0.05f)] private float noiseFloorRms = 0.0012f;
+
+        [Header("Solo la voz cercana")]
+        [Tooltip("Silencia lo que se manda a Vosk cuando la voz es mucho más baja que la de quien habla más cerca.")]
+        [SerializeField] private bool nearVoiceOnly = false;
+        [Tooltip("Cuántos dB más baja que la voz más cercana se ignora. Menor = ignora más voces del fondo (6 dB ≈ el doble de distancia).")]
+        [SerializeField, Range(4f, 40f)] private float gateMarginDb = 24f;
+        [Tooltip("Nunca se transcribe por debajo de este volumen (dBFS), aunque sea la voz más cercana.")]
+        [SerializeField, Range(-80f, -30f)] private float gateFloorDb = -58f;
+        [Tooltip("Qué tan rápido (dB por segundo) olvida a la voz más fuerte para adaptarse si cambia de lugar o de persona.")]
+        [SerializeField, Range(0.2f, 6f)] private float peakDecayDbPerSecond = 1.5f;
+
         private const int ClipLengthSeconds = 2;
+        private float _peakVoiceDb = -80f;
+        private float _gateOpenUntil;
+
+        /// <summary>Activa o desactiva el filtro de voces lejanas (lo controlan los ajustes).</summary>
+        public bool NearVoiceOnly { get => nearVoiceOnly; set => nearVoiceOnly = value; }
+        private float _gain = 6f;
+        private float _noiseRms = 0.005f;
         private const float SilenceDb = -80f;
 
         private AudioClip _clip;
@@ -143,8 +172,66 @@ namespace Subtitulos.Audio
             // Pasar a mono (si el micrófono es estéreo se toma el primer canal).
             for (int i = 0; i < available; i++) _monoBuffer[i] = _readBuffer[i * channels];
 
+            // El volumen (barra y detector de sonidos) se mide con el audio original, sin amplificar.
             LevelDb = ComputeDb(_monoBuffer, available);
+            if (!UpdateGate())
+                Array.Clear(_monoBuffer, 0, available); // silencio: Vosk termina la frase en vez de mezclar voces lejanas
+            else
+                ApplyGain(available);
             SamplesAvailable?.Invoke(_monoBuffer, available);
+        }
+
+        /// <summary>
+        /// True si este bloque debe transcribirse. Sigue el nivel de la voz más fuerte (la más cercana)
+        /// y deja pasar solo lo que no esté mucho más bajo, con un margen para no cortar sílabas suaves.
+        /// </summary>
+        private bool UpdateGate()
+        {
+            float db = LevelDb;
+            _peakVoiceDb = Mathf.Max(db, _peakVoiceDb - peakDecayDbPerSecond * Time.unscaledDeltaTime);
+            if (!nearVoiceOnly) return true;
+
+            float threshold = Mathf.Max(gateFloorDb, _peakVoiceDb - gateMarginDb);
+            if (db >= threshold) _gateOpenUntil = Time.unscaledTime + 0.35f;
+            return Time.unscaledTime < _gateOpenUntil;
+        }
+
+        /// <summary>Amplifica el audio (ganancia automática con ataque rápido y subida lenta).</summary>
+        private void ApplyGain(int count)
+        {
+            float gain = baseGain;
+            if (autoGain)
+            {
+                double sum = 0;
+                for (int i = 0; i < count; i++) sum += _monoBuffer[i] * _monoBuffer[i];
+                float rms = (float)Math.Sqrt(sum / Math.Max(1, count));
+
+                // Ruido de fondo estimado: baja rápido, sube muy despacio (la voz dura poco).
+                _noiseRms = rms < _noiseRms ? Mathf.Lerp(_noiseRms, rms, 0.2f) : Mathf.Lerp(_noiseRms, rms, 0.003f);
+                _noiseRms = Mathf.Max(_noiseRms, 0.0003f);
+
+                // Solo se considera voz lo que está claramente por encima del ruido de fondo.
+                if (rms > noiseFloorRms && rms > _noiseRms * 2.5f)
+                {
+                    float wanted = Mathf.Clamp(targetRms / rms, baseGain, maxAutoGain);
+                    // Si ya está muy fuerte, baja rápido (evita que se sature); si está bajito, sube despacio.
+                    _gain = wanted < _gain ? Mathf.Lerp(_gain, wanted, 0.6f) : Mathf.Lerp(_gain, wanted, 0.2f);
+                }
+                gain = Mathf.Max(baseGain, _gain);
+
+                // Tope: el ruido de fondo nunca debe quedar tan fuerte como una voz. Si Vosk no
+                // percibe silencios, no termina las frases y todo se vuelve lento y confuso.
+                gain = Mathf.Min(gain, Mathf.Max(baseGain, 0.025f / _noiseRms));
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                // Limitador suave para no distorsionar con picos.
+                float v = _monoBuffer[i] * gain;
+                _monoBuffer[i] = v > 0.9f ? 0.9f + 0.1f * (float)Math.Tanh((v - 0.9f) * 10f)
+                              : v < -0.9f ? -0.9f - 0.1f * (float)Math.Tanh((-v - 0.9f) * 10f)
+                              : v;
+            }
         }
 
         /// <summary>Lee 'count' muestras empezando en 'start', dando la vuelta al final del clip si hace falta.</summary>

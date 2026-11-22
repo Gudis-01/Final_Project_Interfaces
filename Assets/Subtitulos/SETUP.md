@@ -73,6 +73,17 @@ la app usa el que esté disponible.
 | Atkinson Hyperlegible (Braille Institute, Google Fonts) | Fuente opcional de alta legibilidad para subtítulos | SIL OFL |
 | Material Icons Round (Google) | Íconos | Apache 2.0 |
 
+## Cómo se usan los ajustes (puntero por mirada)
+
+`UI/GazePointer` se agrega solo al panel. Se mira un botón o interruptor: aparece un aro que se llena
+(1.2 s) y lo activa; o se aprieta el gatillo de un control para activarlo al instante. No depende de
+los rayos del template, y es la forma de interacción realista en unos lentes sin controles.
+
+## Passthrough y color
+
+El passthrough del **Quest 2 es en blanco y negro** (sus cámaras son monocromáticas) y no hay forma
+de cambiarlo por software. El color requiere Quest 3 / 3S / Pro.
+
 ## Cómo está organizado
 
 | Script | Qué hace |
@@ -92,6 +103,7 @@ la app usa el que esté disponible.
 | `UI/ListeningIndicator` | Ícono de micrófono con el estado (cargando / escuchando / error) y el idioma. |
 | `UI/Icons` | Códigos de los íconos de Material Icons. |
 | `Editor/FontAssetFactory` | Crea los font assets dinámicos de TextMeshPro. |
+| `UI/GazePointer` | Puntero por mirada (aro que se llena) y gatillo para usar el panel de ajustes. |
 | `UI/HeadFollowPanel` | Mantiene el panel frente a la vista sin que tiemble (se pausa con los ajustes abiertos). |
 | `Editor/SubtitleSceneBuilder` | El menú que arma (o rehace) la interfaz. |
 | `Editor/PassthroughSceneSetup` | El menú que deja la escena lista para realidad mixta. |
