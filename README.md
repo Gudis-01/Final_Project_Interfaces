@@ -65,16 +65,17 @@ Speech recognition runs on-device with **Vosk** (small English model). Currently
 
 ## Links
 
-- Figma prototype: `[add link]`
-- Commercial: `[add link]`
+- Figma prototype: [Figma link](https://pages.github.com/)
+- Commercial: [Commercial link](https://drive.google.com/file/d/1N08HOnnSY87cfxfnATsC5LsUiTp_cBTw/view?usp=drive_link)
+- APK: [APK download link](https://github.com/Gudis-01/Final_Project_Interfaces/releases/download/v1.0/LiveTitles.apk)
 
 ## Team contributions
 
 | Member | Contribution |
 |---|---|
-| Alvaro David Romero Ramirez | `Main coding` |
-| Omar Alejandro Santos Ibarra | `Advertisement and prototype` |
-| Gerardo Esquivel Sosa | `Testing` |
+| Alvaro David Romero Ramirez | `Main coding, protoype` |
+| Omar Alejandro Santos Ibarra | `Commercial, protoype, final build` |
+| Gerardo Esquivel Sosa | `Testing, protoype` |
 
 ## Known limitations
 
