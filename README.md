@@ -65,7 +65,7 @@ Speech recognition runs on-device with **Vosk** (small English model). Currently
 
 ## Links
 
-- Figma prototype: [Figma link](https://pages.github.com/)
+- Figma prototype: [Figma link](https://www.figma.com/design/SVLlfLBY8SwXyvyQYnKBin/FinalProject?node-id=0-1&t=v8FBZDS3H1OnT9zH-1)
 - Commercial: [Commercial link](https://drive.google.com/file/d/1N08HOnnSY87cfxfnATsC5LsUiTp_cBTw/view?usp=drive_link)
 - APK: [APK download link](https://github.com/Gudis-01/Final_Project_Interfaces/releases/download/v1.0/LiveTitles.apk)
 
